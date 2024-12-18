@@ -1,0 +1,567 @@
+# 这个脚本用来对收到的数据进行处理(包括ad 转换为float的数据类型)，返回并处理错误的数据：需要的数据格式为：
+# 关于数据保存：n is data dims;每过100 * 10000 sample point（包括丢失的data）~ 51s 记录一个文件，该文件有两行；其中一行为1*n 记录所有的raw data， 另一行为electrode 记录所有sample point对应的电极channel
+#                     每次暂停都重新记录一个文件，并获取新的timestamp来计算 自增timestamp;其中 raw data的值用u16来表示raw value             
+#               对于spike 数据，同上，使用同一的文件命名；记录的格式为uint8，有16行 ，每行都是一个channel ，一行数据量为5 * 10000
+
+# update_raw_data : 1 * 120 * 1600 (~ 10s ),每次update都等1s左右的数据读取到了就告诉gui去读取更新一次；读满之后覆盖掉原来的数据;
+# spike_timestamp: 16 * 6 * 1600 处理同上
+
+""" 
+直接记录所有能记录到的数据;记录满一定数量就保存为一个文件;通过timestamp来确定包的时刻;丢包的情况也通过timestamp来确定;
+"""
+from asyncore import read
+from email import message
+import asyncio
+from aioserial import AioSerial
+import serial
+import time
+import threading
+import binascii
+import numpy as np
+import json
+import datetime
+from multiprocessing import Process, freeze_support
+
+import collections as coll
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
+
+import re
+
+def get_raw_data_container(): # LFP raw data TODO HABITS events
+    raw_data = {  # maximum 16 channels
+        "Channel_0":[],
+        "Channel_1":[],
+        "Channel_2":[], 
+        "Channel_3":[],
+        "Channel_4":[], 
+        "Channel_5":[],
+        "Channel_6":[],
+        "Channel_7":[],
+        "Channel_8":[], 
+        "Channel_9":[],
+        "Channel_10":[],
+        "Channel_11":[],
+        "Channel_12":[],
+        "Channel_13":[],
+        "Channel_14":[],
+        "Channel_15":[],
+
+        "TimeStamp":[] , # basic unit is packet
+
+        "MissPackets":0,
+        "MissPacketsIndex":[]
+        } 
+    return raw_data
+
+def get_events_data_container(): # Action potiential events & other recorded data
+    events_data =  {
+        "AcclX":[],
+        "AcclY":[],
+        "AcclZ":[],
+        "GryoX":[],
+        "GryoY":[],
+        "GryoZ":[],
+
+        "RSOC":[],
+        "BatteryStatus":[],
+        "BatteryTemp":[]
+        } 
+    return events_data
+
+def spike_data_container(): # mode 1; raster 16 channels + 1 channel raw data
+    spike_data = {
+        "AP_timestamp":[] , # raw data
+        "Electrode":[] ,
+        "Raw_data":[],
+        "Raw_channel":[],
+        "Raw_timestamp":[],
+        "SpikeThreshold":[],
+
+        "HABITS_event_1":[],
+
+        "MissPackets":0,
+        "MissPacketsIndex":[]
+    }
+    return spike_data
+
+
+def swap16Hex(str):
+    return str[2:4] + str[0:2]
+
+
+def my_gaussian_filter1d(seq, sigma=50 ,truncate=4.0 ,order=0): 
+    """allow NaN elements
+    sigma: 50 windows 401
+    seq's type is ndarray
+    """
+    if seq.ndim > 1:
+        seq = np.squeeze(seq ,1)
+    length = len(seq)
+    ## prepare Kernel
+    sd = float(sigma)
+    # make the radius of the filter equal to truncate standard deviations
+    lw = int(truncate * sd + 0.5) # radius 
+    weights = gaussian_kernel1d(sigma, order, lw)
+    #print("weights_length:" ,weights.shape[0])
+    ## NaN padding
+    pad = lw 
+    out = np.zeros((length + pad * 2), dtype=np.float64) # 1 dim
+    out[pad: pad + length] = seq.copy().astype(np.float64)
+    out[0:pad] = np.nan
+    out[-pad:] = np.nan
+    tmp = out.copy()
+    ## filtering
+    for y in range(length):
+        mask = np.where(np.isnan(tmp[y: y + len(weights)]) == False) # 选择不是nan的部分,并返回对应的index值
+        if np.size(mask) != 0:
+            out[pad + y] = np.sum(weights[mask] * tmp[y: y + len(weights)][mask]) / np.sum(weights[mask]) #TODO 再检查一下
+        else:
+            out[pad + y] = np.nan
+    #out = np.clip(out, 0, 1) # 对于有nan值不适用
+    out = out[pad:pad + length]
+    return out
+
+def gaussian_kernel1d(sigma, order, radius):
+    """
+    Computes a 1-D Gaussian convolution kernel.
+    """
+    if order < 0:
+        raise ValueError('order must be non-negative')
+    exponent_range = np.arange(order + 1)
+    sigma2 = sigma * sigma
+    x = np.arange(-radius, radius+1)
+    phi_x = np.exp(-0.5 / sigma2 * x ** 2)
+    phi_x = phi_x / phi_x.sum()
+
+    if order == 0:
+        return phi_x
+    else:
+        q[0] = 1
+        D = np.diag(exponent_range[1:], 1)  # D @ q(x) = q'(x)
+        P = np.diag(np.ones(order)/-sigma2, -1)  # P @ q(x) = q(x) * p'(x)
+        Q_deriv = D + P
+        for _ in range(order):
+            q = Q_deriv.dot(q)
+        q = (x[:, None] ** exponent_range).dot(q)
+        return q * phi_x
+    
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+class SerialPort(QThread):
+    GUIUpdate = pyqtSignal(list)
+
+    def __init__(self ,port ,buand) -> None:
+        super(SerialPort ,self).__init__()
+        """ GUI system """
+        
+        self.timestamp = 0 # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
+        self.GUIUpdateInterval = 20 # 单位为packets num , per 40 packets upadte the GUI graphs ;2000 packets one file
+        self.UpdateCounter = 0
+
+        # double buffer GUI 
+        self.doubleBuffer = 0
+        # lfp
+        self.lfptimestamp_GUI = []
+        self.lfpdata_GUI = [[] for _ in range(16)]
+        # sensor
+        self.sensordata_GUI = [[] for _ in range(9)]
+        # spike mode 1
+        self.spiketimestamp_GUI = []
+        self.spikedata_GUI = [] # only 1 channel
+        self.spikerasterdata_GUI = [[] for _ in range(16)] 
+
+        # for test
+        self.receive_num_packet = 0
+        self.overflow = 0
+
+        """ Data stream """
+        self.USBFIFO = coll.deque(maxlen=1000)
+        self.lfp_data_buffer = ''
+        self.lfp_timestamp_buffer = []
+        self.lfp_buffer_counter = 0
+        self.lfp_maxlen = 1
+        self.LFPRawCounter = 0
+
+        self.port = serial.Serial(port ,buand)
+        self.port.close() # close the port to avoid the error at the begining of Serial initalization
+
+        """ packages processing """
+        self.message = '' 
+        self.packetID = -1 # 用来判断收到的packet的类型，并分别对不同的packet进行拆包处理
+        self.packet_counter = 0 # 在数据传输过程中记录到的packet 的offset: timestamp
+        self.DAC_resolution = 1/(int('ffff' ,16)) * 1.225 * 2 # 1.225 is the reference voltage of the series of RHD2000 (bipolar ADC)
+
+        """ real-time long-term LFP or spike raw data recording """
+        self.raw_data_per_packet_channel = 7
+        self.raw_data_per_packet = self.raw_data_per_packet_channel * 16
+        self.raw_data_index_base = None
+        self.sensor_index = None
+        
+        """ Event-triggered Spike raw data & AP recording """
+        self.spike_raw_channel = [0, 1, 2, 3] # 记录当前记录spike的raw channel; mode 2
+        self.spike_channel_index_mode1 = 16 # mode 1
+        self.spike_data_buffer = ''
+        self.spike_timestamp_buffer = []
+        self.spike_buffer_counter = 0
+        self.spike_maxlen = 1
+        self.SPIKERawCounter = 0
+
+        """ spike detection """
+        self.calcST = []
+        
+        """ Logging """
+        self.sample_times = 0 # 记录 sample 开始的次数；也就是暂停sample 的次数
+        
+        """ File saving """
+        # LFP raw data or spike raw data
+        self.raw_data = get_raw_data_container()
+        # Action potiential events & other recorded data
+        self.sensors_data = get_events_data_container()
+        # Action potiential events data
+        self.AP_data = spike_data_container()
+        
+        self.file_size = 5000 # packets; default: equal to self.GUIUpdateInterval; in 1khz LFP: it's 12s；# 这个值不能设置太大，否则会导致缓存问题
+        
+        self.overflowSignal = [0, 0] # last and current
+
+        self.LFP_max_interval = 4 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
+        self.Spike_max_interval = 6 # same as above but for the minimum value
+
+        """ IMU & LC data recording """
+        self.sensor_update_flag = 0
+        self.sensor_name = list(self.sensors_data.keys())
+        self.batteryStatus = 0
+
+    def port_open(self):
+        """ seiral ports opening """
+        if not self.port.isOpen():
+            self.port.open()
+    
+    def port_close(self):
+        """ serial ports closing """
+        self.port.close()
+    
+    def send_data(self ,data):
+        """ write commands to peripheral """
+        n = self.port.write(data) # must is bytes
+        return n
+
+    def read_data(self):
+        """ read fifo of usbd """
+        # # 清除 uart 的buffer
+        self.flush()
+        # get the raw_data_index_base
+        self.get_decoding_index()
+        full_frame = bytearray()
+        while(True): # async main loop
+            # read neural data containing n packets    
+            # read decoded by acsii ,and the type is str ,the expected str is the stop signal; 50ms->20 packets
+            # 这个命令会导致阻塞(等待usb上传data的速度，最好搭配异步处理)，同时效率低下（需要循环读取单字节来判断until事件） 最好serial都使用read_all()
+            # self.USBFIFO.append(self.port.read_until(b'%&\'(')) 
+            # self.data_process_full()
+
+            temp_frame = self.port.read_all()
+            if(len(temp_frame) == 0):
+                continue
+            full_frame += bytearray(temp_frame)
+            if(full_frame[-4:] != b'%&\'('):
+                continue
+            else:
+                self.USBFIFO.append(full_frame)
+                full_frame = bytearray()
+                self.data_process_full()
+
+
+    def data_process_full(self):
+        # GUI updater
+        self.GUIUpate_enable()
+        
+        read_data = self.USBFIFO.popleft()
+        if(len(read_data)!= 0):
+            read_data = str(binascii.b2a_hex(read_data ,' ', 2))
+            spilt_temp = re.split('[ ][2][1][2][2][ ][2][3][2][4][ ]',read_data[2:-10])[0:-1] # 注意，这个正则化表达式很重要
+            
+            """ 6 kinds of packets:
+            1. raw data: include LFP/Spike raw data + IMU + LC + spike events
+            2. timestamp: the onset of sampling
+            3. empty: when the sample is stopping
+            """
+            for _, packets in enumerate(spilt_temp):
+                self.receive_num_packet += 1
+                # get the category of packets
+                try:
+                    packets_type = int(packets[2:4], 16)
+                    packet_length = (len(packets) + 1) / 5
+                except:
+                    packets_type = -1
+                    packet_length = 0
+                    pass
+                # print(packet_length)
+
+                # packet proprocessing 
+                """ lfp packets: mode 0 """
+                if(packets_type == 1 and packet_length == 125): #  lfp packets: mode 0
+                    self.LFPRawCounter += 1
+                    # self.UpdateCounter += 1
+                    
+                    # get timestamp + lfp channel length + overflow signal
+                    self.lfp_timestamp_buffer.append(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
+                    _ = int(packets[0:2] ,16) # channel num of each packets
+                    self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
+                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
+                    
+                    # lfp packets: 10 packets process
+                    self.lfp_data_buffer += (packets[20:] + ' ')
+                    self.lfp_buffer_counter += 1
+           
+                    ## only proprocess sensor data + lfp raw data
+                    if(self.lfp_buffer_counter >= self.lfp_maxlen):
+                        self.lfp_packets_process()
+                        self.lfp_buffer_counter = 0
+                        self.lfp_timestamp_buffer = []
+                        self.lfp_data_buffer = ''
+                    # file saving
+                    self.save_lfp_file()
+
+                    """  spike packets: mode 1 """
+                elif(packets_type == 2 and packet_length == 108): 
+                    self.SPIKERawCounter += 1
+
+                    self.spike_timestamp_buffer.append(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
+                    self.spike_channel_index_mode1 = int(packets[0:2] ,16) # channel index of current packets
+                    self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
+                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
+
+                    self.spike_data_buffer += (packets[20:] + ' ')
+                    self.spike_buffer_counter += 1
+
+                    if(self.spike_buffer_counter >= self.spike_maxlen):
+                        self.spike_packets_process()
+                        self.spike_buffer_counter = 0
+                        self.spike_timestamp_buffer = []
+                        self.spike_data_buffer = ''
+
+                    self.save_spike_mode1_file()
+                    pass
+                
+                    """  spike packets: mode 2 """
+                # elif(packets_type == 2 and packet_length == 108):
+                #     pass
+                elif(packets_type == -1):
+                    # other packets
+                    pass
+
+
+
+    def lfp_packets_process(self):
+        # spilt
+        self.lfp_data_buffer = np.array(self.lfp_data_buffer.split(' '))[0:-1]
+       
+        # 1. raw data 
+        for channel_num in range(16):
+            temp_channel = self.lfp_data_buffer[self.raw_data_index_base + channel_num * self.raw_data_per_packet_channel] # 注意这里要乘以6，每一个通道有6个连续的数据！！调了一整天这个bug 服了
+            temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
+            # print(temp_channel_DAC)
+            # save to file
+            self.raw_data["Channel_{}".format(channel_num)].extend(temp_channel_DAC)
+            # give to GUI buffer
+            self.lfpdata_GUI[channel_num].extend(temp_channel_DAC)
+        
+        # 2. timestamp
+        self.raw_data["TimeStamp"].extend(self.lfp_timestamp_buffer)
+        self.lfptimestamp_GUI.extend(self.lfp_timestamp_buffer)
+            
+        # 3. sensor data
+        temp_sensor_data = self.lfp_data_buffer[self.sensor_index]
+        temp_sensor_data = np.array(list(map(lambda x:self.DAC((x)), temp_sensor_data)))
+        for i in range(9):
+            temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
+            # for GUI
+            self.sensordata_GUI[i].extend(temp_sensor)
+            # for file
+            self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
+            if(i == 7):
+                # battery status
+                if(0 in temp_sensor): # TODO other situations
+                    self.batteryStatus = 0 # normal
+
+
+    def spike_packets_process(self):
+        # spilt
+        self.spike_data_buffer = np.array(self.spike_data_buffer.split(' '))[0:-1]
+        # if(self.SPIKERawCounter % 1000 == 0):
+        #     print(self.spike_data_buffer)
+        # 1. raw data + timestamp
+        temp_channel = self.spike_data_buffer[13:-5] 
+        temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
+
+        # 2. give to GUI buffer
+        self.spikedata_GUI.extend(temp_channel_DAC)
+        self.spiketimestamp_GUI.extend(self.spike_timestamp_buffer)
+        
+        # 3. save to file
+        # self.AP_data["Channel_{}".format(channel_num)].extend(temp_channel_DAC)
+        # self.AP_data["TimeStamp"].extend(self.lfp_timestamp_buffer)
+            
+        # 4. sensor data
+        temp_sensor_data = self.spike_data_buffer[self.sensor_index]
+        temp_sensor_data = np.array(list(map(lambda x:self.DAC((x)), temp_sensor_data)))
+        for i in range(9):
+            temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
+            # for GUI
+            self.sensordata_GUI[i].extend(temp_sensor)
+            # for file
+            # self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
+            if(i == 7):
+                # battery status
+                if(0 in temp_sensor): # TODO other situations
+                    self.batteryStatus = 0 # normal
+        
+        # 5. raster data
+        temp_raster_data = self.spike_data_buffer[-5:]
+        for spike_data in temp_raster_data:
+            spike_data = format(self.DAC(swap16Hex(spike_data)) ,'#018b')[2:] # 保留 前16位
+            for channel_num ,spike_num in enumerate(spike_data):
+                self.spikerasterdata_GUI[15 - channel_num].append(int(spike_num))
+
+
+    def save_lfp_file(self):
+        """ save data to a file"""
+        # the conditions of saving to a file:
+        # 1. every stop events of sample
+        # 2. per 2000 raw data packets
+        if(self.LFPRawCounter == self.file_size or sum(self.overflowSignal) == 1):
+            self.LFPRawCounter = 0
+            # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file
+            timestamp_files = np.array(self.raw_data["TimeStamp"])
+            timestamp_diff = np.diff(timestamp_files)
+            
+            # recording the missed packets number
+            miss_packets = np.argwhere((timestamp_diff > self.LFP_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
+            self.raw_data["MissPacketsIndex"] = miss_packets
+            # number
+            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.LFP_max_interval) - 1
+            # print(list(timestamp_diff[miss_packets]))
+            miss_packets_num = np.sum(miss_packets_num.flatten())
+            self.raw_data["MissPackets"] = miss_packets_num
+            print("miss counter one file {} {} delay {} recieved_all {}".format(miss_packets_num ,
+                                                                             miss_packets_num/self.file_size ,
+                                                                             np.sum(timestamp_diff), 
+                                                                             self.receive_num_packet))
+                
+            # 2. save the file
+            """ load methods
+            data = np.load("xxx.npy", allow_pickle=True)
+            print(data.item()["TimeStamp"]) ...
+            """
+            now_time=datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            # TODO 后续开启一个定时线程合并这些temp 文件 ；每n小时一个文件
+            # np.save('test_RawData_{}_{}.npy'.format(self.sample_times,now_time) ,self.raw_data, dict)
+            # np.save('test_SensorData_{}_{}.npy'.format(self.sample_times,now_time) ,self.sensors_data , dict)
+            
+            # 3. reinit the temp array
+            self.raw_data = get_raw_data_container()
+            self.sensors_data = get_events_data_container()
+
+            # 4. resample detection
+            if(sum(self.overflowSignal) == 1): #  重新开始sample
+                self.sample_times += 1
+                self.overflowSignal[0] = self.overflowSignal[1]
+                print("sample begin!")
+            self.receive_num_packet = 0
+
+    def save_spike_mode1_file(self):
+        pass
+
+
+    def GUIUpate_enable(self):
+        """ GUI update """ 
+        if(len(self.lfptimestamp_GUI) >= self.GUIUpdateInterval):
+            self.GUIUpdate.emit([[0], self.lfptimestamp_GUI, self.lfpdata_GUI, self.sensordata_GUI]) # mode 0
+            self.lfptimestamp_GUI = []
+            self.lfpdata_GUI = [[] for _ in range(16)]
+            self.sensordata_GUI = [[] for _ in range(9)]
+        elif(len(self.spiketimestamp_GUI) >= self.GUIUpdateInterval):
+            self.GUIUpdate.emit([[1, self.spike_channel_index_mode1], self.spiketimestamp_GUI, self.spikedata_GUI, self.sensordata_GUI, self.spikerasterdata_GUI]) # mode 1
+            self.spiketimestamp_GUI = []
+            self.spikedata_GUI = []
+            self.spikerasterdata_GUI = [[] for _ in range(16)]
+            self.sensordata_GUI = [[] for _ in range(9)]
+          
+
+    def get_decoding_index(self):
+        """ lfp_ index """
+        self.raw_data_index_base = np.array([])
+        self.sensor_index = np.array([])
+        temp_index = np.arange(0, self.lfp_maxlen * self.raw_data_per_packet, self.raw_data_per_packet)
+        for i in range(self.raw_data_per_packet_channel):
+            self.raw_data_index_base = np.append(self.raw_data_index_base, temp_index + 9 + i)
+        self.raw_data_index_base = np.sort(self.raw_data_index_base)
+        self.raw_data_index_base = np.array(self.raw_data_index_base, dtype=np.int64)
+
+        """ sensor_ index """
+        for i in range(9):
+            self.sensor_index =  np.append(self.sensor_index ,temp_index + 0 + i)
+        self.sensor_index = np.sort(self.sensor_index)
+        self.sensor_index = np.array(self.sensor_index, dtype=np.int64)
+
+
+    def DAC(self ,x ,raw=True): 
+        if raw:
+            return int(x ,16) # n
+        else:
+            return (float(int(x ,16) * self.DAC_resolution) - 1.225) / 192 * 1000 * 1000  # uV 放大 192 倍
+
+
+    def flush(self):
+        self.port.flushInput()
+
+
+    def calc_SpikeThreshold(self ,x):
+        """的数据计算一次threshold"""
+        x = np.array(x ,dtype=np.float32)
+        return 4 * np.median(np.abs(x) / 0.6745)
+    
+    # async def serial_main_run(self):
+    #     # begining asyncio function
+    #     task = asyncio.create_task(self.read_data())
+    #     await asyncio.gather(task)
+
+    def run(self): # re-write the run method of Qthread
+        #  asyncio.run(self.serial_main_run())
+        self.read_data()
+
+
+
+##################################################################################################################
+# test 
+from time import sleep
+serialPort="COM12"   #串口
+baudRate=20000000      #波特率
+
+channel = 0
+if __name__=='__main__':
+   
+    mSerial = SerialPort(serialPort ,baudRate)
+    mSerial.port_open()
+
+    process = threading.Thread(target=mSerial.run)
+    process.start()
+    
+    test_switch = False
+    while(True):
+        user_input = input("control key:")
+        if user_input:
+            test_switch = not test_switch
+            if test_switch:
+                # data = [0x01 ,0x00] # begin
+                data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00]
+                channel += 1 
+            else:
+                # data = [0x02 ,0x00] # stop
+                data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00] 
+                channel += 1 
+            mSerial.send_data(data)
+            print(test_switch, channel)
+            user_input = 0
+        else:
+            mSerial.port_close()

@@ -1,0 +1,9 @@
+if BOARD_LFP
+
+config BOARD
+	default "lfp"
+
+config BT_CTLR
+	default BT
+
+endif # BOARD_LFP
