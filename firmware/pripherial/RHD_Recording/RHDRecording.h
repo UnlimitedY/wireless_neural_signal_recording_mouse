@@ -196,6 +196,8 @@ extern uint8_t gp_channel_2;
 extern uint8_t gp_channel_3;
 
 extern k_tid_t mainThread;
+
+extern bool sample_switch;
 /*************************************** function ***************************************************/
 uint32_t CS_Gpiote_init(void); // init gpiote: control spi cs line with ppi
 

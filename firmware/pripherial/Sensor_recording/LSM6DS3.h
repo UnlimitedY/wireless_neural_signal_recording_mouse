@@ -1807,7 +1807,7 @@ void LSM6DS3_set_accel_high_performance_mode(uint16_t value);
  * @brief function to read accelerometer data
  */
 void LSM6DS3_read_accl_data(uint16_t *accl_x ,uint16_t *accl_y ,uint16_t *accl_z);
-
+// void LSM6DS3_read_accl_data(uint16_t *acc);
 
 
 
@@ -1835,7 +1835,7 @@ void LSM6DS3_set_gyro_sleep_mode();
  * @brief functioon to read gyroscope data.
  */
 void LSM6DS3_read_gyro_data(uint16_t *gyro_x, uint16_t *gyro_y, uint16_t *gyro_z);
-
+// void LSM6DS3_read_gyro_data(uint16_t *gyro);
 
 
 /**
@@ -1871,4 +1871,8 @@ uint16_t LSM6DS3_read_FIFO_buffer(void);
  */
 void LSM6DS3_tap_detect_config();
 
+
+void LSM6DS3_accel_enable();
+
+void LSM6DS3_gyro_enable();
 #endif

@@ -81,7 +81,7 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 /********************************Sample rate**********************************/
 bool mode_switch_flag = false; 
 
-u16_t sampe_mode = 1; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
+u16_t sampe_mode = 2; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
 uint32_t timer_period = 26; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
 uint32_t reset_ticks_value = SPI_RX_BUF_SIZE;
 
@@ -216,6 +216,8 @@ void LSM6DS3_Read(u16_t *data){ // only recording 3-axis
         */
 	LSM6DS3_read_accl_data(data ,data + 1 ,data + 2);
 	LSM6DS3_read_gyro_data(data + 3 ,data + 4 ,data + 5);
+        // LSM6DS3_read_accl_data(&data);
+        // LSM6DS3_read_gyro_data(&data[3]);
 }
 
 
@@ -526,12 +528,13 @@ int main(void)
         * 8. + thread: 3.8mA ;2khz 16 channel 
         * 9. + IMU (104 Hz) 6-axis: ~4.5mA
         * 10. + spike 17khz: 38mW: 9.6mA 
+        * 11. spike 17khz 4 channels raw data : 22mA -> 75mW
         */
         // static u32_t runingtime;
 
         /**************** main thread ******************/
         mainThread = k_sched_current_thread_query();
-        u32_t packets_counter = k_uptime_get_32();
+        u32_t packets_counter = k_uptime_get_32(); // 4096 ticks per sec 
 
         /*
         ******************************************* setup ***********************************
@@ -540,6 +543,10 @@ int main(void)
         init_everything();
         /****************************recording start******************************/
         // for test
+        u32_t test_address;
+        test_address = (uint32_t)&spike_m_tx_buf[0];
+        test_address = (uint32_t)&spike_m_rx_buf[0][0];
+        // test_address = (uint32_t)&spike_m_rx_buf[1][SPIKE_RX_BUFFER_SIZE - 1];
         // while(1){
         // running_time_onset();
 
@@ -649,9 +656,9 @@ int main(void)
                                         if(esb_tx_full()){ // remove one oldest packets
                                                 esb_pop_tx();
                                         }
-                                        // for test
-                                        imu_data[3] = (u16_t)spi_overflow_flag; 
-                                        imu_data[4] = (u16_t)(spi_overflow_flag >> 16); 
+                                        // // for test
+                                        // imu_data[3] = (u16_t)spi_overflow_flag; 
+                                        // imu_data[4] = (u16_t)(spi_overflow_flag >> 16); 
 
                                         /* for single raw channel MUA_BIN_SIZE: 18 ;SPIKE_SAMPLE_POINT_NUM: 90 */
                                         err = spike_tx_payload_wrap(spike_channel_array[recorded_spike_channel], MutiUnitActivityArray, 
@@ -676,6 +683,7 @@ int main(void)
                                                 }
                                         }
                                         err = spike_multi_tx_payload_wrap(temp_spike_channel_array, sizeof(temp_spike_channel_array)/2, spike_raw_channel, (u8_t)packets_nu);
+                                        k_sleep(K_USEC(500)); // 用来保证 数据传输接受会按照先后顺序
                                 }
                         }
                         

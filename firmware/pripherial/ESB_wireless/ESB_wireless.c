@@ -167,6 +167,15 @@ void command_process(uint8_t length, uint16_t *data)
         }
     }
         break;
+    case 0x0500: // spike mode 2: 4 raw channel selection
+    {
+        for(int i=1; i<5 ; i++){
+            if((u8_t)data[i] < 16){
+                spike_raw_channel[i-1] = (u8_t)data[i];
+            }
+        }
+    }
+        break;
     default:
         break;
     }
@@ -295,7 +304,7 @@ int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, u16_t
 
 /**************************mode 2**********************/
 int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u8_t *packet_index, u8_t counter){
-    tx_payload.noack = 0;
+    tx_payload.noack = 0; // ack; 注意，没有ack 会导致大约1% 的丢包 
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
     // 1. pre-head of packet 0xXXYY---XX is type; YY is the index of recorded channels

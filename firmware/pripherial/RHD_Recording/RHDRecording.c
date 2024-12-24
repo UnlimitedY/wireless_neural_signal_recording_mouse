@@ -74,8 +74,8 @@ void SPI_timer_event_handler(nrf_timer_event_t event_type, void *p_context) // <
 { // 6 ms
 	unsigned int key = irq_lock();
 	// 这里会短暂的暂停 < 1us
-	*(volatile uint32_t *)((uint8_t *)((&RHD_timer_nRFX)->p_reg + (uint32_t)NRF_TIMER_TASK_STOP)) = 0x1UL;
-	// nrfx_timer_pause(&RHD_timer_nRFX); // 这里通过短暂的暂停 sampling 来保证sample 和 数据处理 不会发送 冲突；对于timer 的时间太短的时候，读取相关的值可能会导致读与写的冲突
+	// *(volatile uint32_t *)((uint8_t *)((&RHD_timer_nRFX)->p_reg + (uint32_t)NRF_TIMER_TASK_STOP)) = 0x1UL; // 注意 使用这个会有bug，会导致 fatal error在一定时间后
+	nrfx_timer_pause(&RHD_timer_nRFX); // 这里通过短暂的暂停 sampling 来保证sample 和 数据处理 不会发送 冲突；对于timer 的时间太短的时候，读取相关的值可能会导致读与写的冲突
 
 	spi_buff_flag = !spi_buff_flag;
 
@@ -89,6 +89,9 @@ void SPI_timer_event_handler(nrf_timer_event_t event_type, void *p_context) // <
 	}else{
 		spi_overflow_flag = ((&spi)->p_reg->TXD.PTR - (uint32_t)&spike_m_tx_buf[SPIKE_SPI_TX_BUF_SIZE]) / 2; // mode 1下，溢出固定为14 ，也就是7个 sample
 		
+		// if((&spi)->p_reg->RXD.PTR > (uint32_t)&spike_m_rx_buf[1][SPIKE_SPI_TX_BUF_SIZE * 2 - 1]){
+		// 	sample_switch = false;
+		// }
 		// 	// tx buffer pointer
 		(&spi)->p_reg->TXD.PTR = (uint32_t)&spike_m_tx_buf[spi_overflow_flag];
 		// 	// rx double buffer pointer
@@ -97,8 +100,8 @@ void SPI_timer_event_handler(nrf_timer_event_t event_type, void *p_context) // <
 	
 	buffer_is_full = true;
 
-	// nrfx_timer_resume(&RHD_timer_nRFX);
-	*((volatile uint32_t *)((uint8_t *)(&RHD_timer_nRFX)->p_reg + (uint32_t)NRF_TIMER_TASK_START)) = 0x1UL;
+	nrfx_timer_resume(&RHD_timer_nRFX);
+	// *((volatile uint32_t *)((uint8_t *)(&RHD_timer_nRFX)->p_reg + (uint32_t)NRF_TIMER_TASK_START)) = 0x1UL;
 
 	k_wakeup(mainThread);
 
@@ -161,14 +164,14 @@ uint32_t ppi_init(){
 		// lfp
 		xfer_desc.p_tx_buffer = (uint8_t const *)m_tx_buf;
 		xfer_desc.tx_length = m_length;
-		xfer_desc.p_rx_buffer = m_rx_buf[0];
+		xfer_desc.p_rx_buffer = (uint8_t const *)m_rx_buf[0];
 		xfer_desc.rx_length = m_length;
 	}else{
 		// spike
 		// nrfx_spim_xfer_desc_t xfer_desc = NRFX_SPIM_XFER_TRX(spike_m_tx_buf, m_length, spike_m_rx_buf[0], m_length);
 		xfer_desc.p_tx_buffer = (uint8_t const *)spike_m_tx_buf;
 		xfer_desc.tx_length = m_length;
-		xfer_desc.p_rx_buffer = spike_m_rx_buf[0];
+		xfer_desc.p_rx_buffer = (uint8_t const *)spike_m_rx_buf[0];
 		xfer_desc.rx_length = m_length;
 	}
 	

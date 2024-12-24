@@ -53,6 +53,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.IMUaccle_name = ['Accl_X' ,'Accl_Y' ,'Accl_Z']
         self.IMUgryo_name  = ['Gryo_X' ,'Gryo_Y' ,'Gryo_Z']
 
+        self.current_sample_mode = 0 
+
         """ init params """
         # system
         self.mSerial = [None for _ in range(Max_pipe)] # muti serial port 
@@ -66,7 +68,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.chart_x_length_ms = 10000 # 12s
         self.update_packets_num = 0  # genarated data points when GUI update is enabled; determined by @param GUIUpdateInterval ; packets number
         self.lfp_display_data_num = self.lfp_sample_rate * self.chart_x_length_ms // 1000 # 在plot中一次展示的windows的个数,通过采样频率来确定
-        self.spike_display_data_num = self.spike_sample_rate * self.chart_x_length_ms // 1000
+        self.spike_display_data_num = self.spike_sample_rate * self.chart_x_length_ms // 1000 // 2
 
         self.spike_raster_display_data_num = self.spike_display_data_num // self.spike_raster_bin // 5
 
@@ -94,7 +96,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         ###### params
         self.spike_raw_channel = 0 # raw data display channel
 
-        ################# LFP raw data 
+        ################# LFP raw data mode 0 
         self.separate_interval = 1000 # TODO
         self.saturation_value = 500
         self.ring_lfp_pointer = 0
@@ -102,6 +104,18 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.LFP_raw_data =np.full((self.spike_channel_num ,self.lfp_display_data_num) ,np.nan)
         self.lfpmisspackets = 0 # recording the number of missed packets every GUI update events
         self.lfpaccumulpackets = 0 # recording received packets number
+
+        ################# spike mode 2 
+        self.spike_mode2_curr_channel = [0 for _ in range(16)]
+        self.ring_spike_mode2_pointer = 0
+        self.spike_mode2_x = np.arange(0, self.spike_display_data_num, 1)
+        self.spike_mode2_raw_data =np.full((self.spike_channel_num ,self.spike_display_data_num) ,np.nan)
+        self.spike_moide2_misspackets = 0 # recording the number of missed packets every GUI update events
+        self.spike_mode2_accumulpackets = 0 # recording received packets number
+
+        self.reinit_rawdata_mode2 = False
+        self.reinit_rawdata_mode2_temp = 0
+
         ############### Other sensors
         self.ring_LSR_pointer = 0
         self.LSR_display_data_num = 1000 # TODO
@@ -158,12 +172,12 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.LFP_channel.setCentralWidget(self.LFP_layout_channel) # 将绘图区域设置为视图的中心组件
         
         self.LFP_pI_channel = pg.PlotItem() 
-        self.LFP_pI_channel.setTitle('LFP data 0-15 channels')
+        self.LFP_pI_channel.setTitle('LFP or AP data 0-15 channels')
         self.LFP_v1_channel = self.LFP_pI_channel.vb # 得到曲线的视图层
         self.LFP_layout_channel.addItem(self.LFP_pI_channel, row = 1, col = 1)# 将这个曲线层放到中间
         self.LFP_layout_channel.scene().addItem(self.LFP_view_channel)
         self.LFP_view_channel.setXLink(self.LFP_v1_channel)
-        self.LFP_pI_channel.getAxis("left").setLabel('LFP', color='#FFC0CB')
+        self.LFP_pI_channel.getAxis("left").setLabel('LFP/AP', color='#FFC0CB')
         self.LFP_pI_channel.addLegend()
          
         # LFP lines
@@ -360,7 +374,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
     # data update function
     def update_plot_data(self, data):  # 注意：实际的一次更新得到的包的数量是在浮动的根据线程处理的速度
         if self.curr_active_ports is not None:
-            self.system_data_update(self.curr_active_ports) # TODO update system params like sample rate...
+            self.system_data_update(self.curr_active_ports, int(data[0][0])) # TODO update system params like sample rate; sample mode...
             self.raw_data_generator(self.curr_active_ports, data)
             
             if(int(data[0][0]) == 0):
@@ -415,7 +429,25 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                             self.channel_panding = 0
                             self.Auto_ST_Update_flag = 0
                             self.textBrowser.append("Note:Auto Spike Threshold completed!")
-                           
+            
+            elif(int(data[0][0]) == 2):
+                """ spike data mode 2 """ 
+                # # update infinited line
+                self.updating_indicater.setPos(self.ring_spike_mode2_pointer) # span (0, 1)
+                self.updating_indicater.label.setFormat('loss_packets:{}/{} time: {} s'.format(self.spike_moide2_misspackets, self.spike_mode2_accumulpackets, self.spike_timestamp_note // 1000))
+                for i in range(16): # diff color diff channels separate_interval
+                    # update data
+                    """ upper and lower band """
+                    if(self.spike_mode2_curr_channel[i] != 0):
+                        self.reinit_rawdata_mode2_temp += 1
+                        self.LFP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+                    else:
+                        # re-init raw data
+                        self.spike_mode2_raw_data[i] = np.full((1 ,self.spike_display_data_num) ,np.nan)
+                        self.LFP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))
+                # if(self.reinit_rawdata_mode2_temp == 4):
+                #     self.reinit_rawdata_mode2 = False
+                # self.reinit_rawdata_mode2_temp = 0      
 
             """ LSR data update """ 
             self.accle_updating_indicater.setPos(self.ring_LSR_pointer) # span (0, 1)
@@ -516,6 +548,48 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                     for channel_num in range(16):
                         self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:endpoint] = spike_raster_data_mode_1[channel_num] * (channel_num)
                     self.ring_spike_raster_pointer = endpoint # update indicater
+            
+            elif(int(data[0][0]) == 2):
+                """ spike raw data AP mode 2 """
+                spike_timestamp = np.array(data[1])
+                spikeraw_data =data[2]
+                 # curr timestamp
+                self.spike_timestamp_note = spike_timestamp[0]
+
+                # statitic dropped packets
+                temp_loss_diff = np.diff(spike_timestamp) 
+                temp_loss = np.argwhere((temp_loss_diff > self.mSerial[port].Spike_max_interval) | (temp_loss_diff <= 0)).flatten()
+                # if(len(temp_loss) > 0):
+                #     QMessageBox.warning("Mode2: loss packets:" ,temp_loss_diff[temp_loss]) 
+                loss_packets_value = len(temp_loss)  #  self.mSerial[port].LFP_max_interval - 1)  lossed number of packets
+                self.spike_moide2_misspackets +=  loss_packets_value
+                self.spike_mode2_accumulpackets += len(spike_timestamp)
+
+                # 每save file一次就重新统计丢失的包的数量
+                if(self.spike_mode2_accumulpackets >= self.mSerial[port].file_size):
+                    self.spike_mode2_accumulpackets = 0
+                    self.spike_moide2_misspackets = 0
+
+                # update figure data
+                self.spike_mode2_curr_channel = []
+                for ii in range(16):
+                    self.spike_mode2_curr_channel.append(len(spikeraw_data[ii]))
+                
+                endpoint = self.ring_spike_mode2_pointer + max(self.spike_mode2_curr_channel)
+                if(endpoint > self.spike_display_data_num):
+                    temp_onset = endpoint - self.spike_display_data_num
+                    for channel_num in range(16):
+                        if(self.spike_mode2_curr_channel[channel_num] != 0):
+                            temp_vdd = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval
+                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:] = temp_vdd[0:-temp_onset]
+                            self.spike_mode2_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                    self.ring_spike_mode2_pointer = temp_onset
+                else:
+                    for channel_num in range(16):
+                        if(self.spike_mode2_curr_channel[channel_num] == max(self.spike_mode2_curr_channel)):
+                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:endpoint] = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval
+                    self.ring_spike_mode2_pointer = endpoint # update indicater
+                pass
 
 
             """ sensing data 9 data """
@@ -533,10 +607,39 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 self.ring_LSR_pointer = sensor_end_point
 
     
-    def system_data_update(self ,port):
+    def system_data_update(self ,port, mode):
         """
         acquire timestamp and other system parameters
         """
+        if port is not None:
+            if(mode != self.current_sample_mode):
+                if(mode == 0): # lfp mode
+                    self.separate_interval = 1000
+
+                    # lfp ticks setting
+                    lfp_ticks = {
+                        int(value):'channel{}'.format(channel) for value, channel in 
+                        zip(np.arange(0, self.spike_channel_num * self.separate_interval, self.separate_interval), range(16))
+                    }
+                    self.LFP_pI_channel.getAxis("left").setTicks([lfp_ticks.items()])
+
+                    self.LFP_v1_channel.setLimits(xMin=0, xMax=self.lfp_display_data_num, yMin=-self.separate_interval, yMax=self.spike_channel_num * self.separate_interval)
+                    self.LFP_v1_channel.setYRange(1 ,self.spike_channel_num * self.separate_interval) 
+                    self.LFP_v1_channel.setXRange(0 ,self.lfp_display_data_num)
+                elif(mode == 2):
+                    self.separate_interval = 2000
+
+                    # spike ticks setting
+                    spike_mode2_ticks = {
+                        int(value):'channel{}'.format(channel) for value, channel in 
+                        zip(np.arange(0, self.spike_channel_num * self.separate_interval, self.separate_interval), range(16))
+                    }
+                    self.LFP_pI_channel.getAxis("left").setTicks([spike_mode2_ticks.items()])
+
+                    self.LFP_v1_channel.setLimits(xMin=0, xMax=self.spike_display_data_num, yMin=-self.separate_interval, yMax=self.spike_channel_num * self.separate_interval)
+                    self.LFP_v1_channel.setYRange(1 ,self.spike_channel_num * self.separate_interval) 
+                    self.LFP_v1_channel.setXRange(0 ,self.spike_display_data_num)
+            self.current_sample_mode = mode
         pass
 
     def init_wireless_recording(self):
@@ -616,7 +719,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 self.channel_command = [0x00, 0x04 ,  0x00 ,0x00,    0x00, 0x00] 
                 # recording raw channel
                 self.channel_command[-4] = int(hex(self.comboBoxList[3].currentIndex()) ,16)
-                # TODO threshold; 注意这里需要等待 改通道的数据全部刷新完成后再使用 
+                # threshold; 注意这里需要等待 改通道的数据全部刷新完成后再使用 
                 temp_threshold = self.mSerial[self.curr_active_ports].calc_SpikeThreshold(self.spike_raw_data[0])
                 temp_threshold = int((temp_threshold / 1000 / 1000 * 192 + 1.225) / self.mSerial[self.curr_active_ports].DAC_resolution)
                 temp_threshold = temp_threshold - int('0x8000', 16)
@@ -630,12 +733,23 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 self.channel_command[-2] = int(temp_threshold[2:4] ,16)
 
                 self.err = self.mSerial[self.curr_active_ports].send_data(self.channel_command)
+                
             else:
                 QMessageBox.warning(self.MainWindow, "Warning", "Please opening the Serial port !")
         
-        elif self.my_sender == u"threshold set":
+        elif self.my_sender == u"channel selection mode2":
             if self.curr_active_ports in self.mSerial_disable:
-               pass
+                self.mode2_channel_command = [0x00 ,0x05 ,0x00 ,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] # 4 channels setting
+                try:
+                    temp_mode2_str = self.lineEdit_2.text().split(' ') # 空格分开
+                    for i in range(4):
+                        self.mode2_channel_command[2*(i + 1)] = (int(temp_mode2_str[i]))
+                    
+                    self.err = self.mSerial[self.curr_active_ports].send_data(self.mode2_channel_command)
+                    # self.reinit_rawdata_mode2 = True
+                except:
+                    pass
+                pass
             else:
                 QMessageBox.warning(self.MainWindow, "Warning", "Please opening the Serial port !")
             pass
@@ -652,9 +766,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         
         elif self.my_sender == u"MT threshold set":
             if self.curr_active_ports in self.mSerial_disable:
-                self.MT_threshold = [0x13 ,0x00 ,0x00 ,0x00]
-                self.MT_threshold[-1] = int(self.lineEdit_3.text(),16) #同上
-                self.err = self.mSerial[self.curr_active_ports].send_data(self.MT_threshold)
+                pass
             else:
                 QMessageBox.warning(self.MainWindow, "Warning", "Please opening the Serial port !")
             pass

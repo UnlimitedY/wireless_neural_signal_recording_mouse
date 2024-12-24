@@ -151,6 +151,12 @@ class SerialPort(QThread):
 
     def __init__(self ,port ,buand) -> None:
         super(SerialPort ,self).__init__()
+
+        """ for test """
+        self.test = 0
+        self.test1 = []
+        self.test2 = 0
+        self.tiema = 0
         """ GUI system """
         
         self.timestamp = 0 # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
@@ -168,6 +174,10 @@ class SerialPort(QThread):
         self.spiketimestamp_GUI = []
         self.spikedata_GUI = [] # only 1 channel
         self.spikerasterdata_GUI = [[] for _ in range(16)] 
+        # spike mode 2
+        self.spiketimestamp_mode2_GUI = []
+        self.spikechannel_mode2_GUI = []
+        self.spikedata_mode2_GUI = [[] for _ in range(16)] # 16 channel with 4 active channels
 
         # for test
         self.receive_num_packet = 0
@@ -190,21 +200,36 @@ class SerialPort(QThread):
         self.packet_counter = 0 # 在数据传输过程中记录到的packet 的offset: timestamp
         self.DAC_resolution = 1/(int('ffff' ,16)) * 1.225 * 2 # 1.225 is the reference voltage of the series of RHD2000 (bipolar ADC)
 
-        """ real-time long-term LFP or spike raw data recording """
+        """ real-time long-term LFP or spike raw data recording mode 0"""
         self.raw_data_per_packet_channel = 7
         self.raw_data_per_packet = self.raw_data_per_packet_channel * 16
         self.raw_data_index_base = None
         self.sensor_index = None
         
         """ Event-triggered Spike raw data & AP recording """
-        self.spike_raw_channel = [0, 1, 2, 3] # 记录当前记录spike的raw channel; mode 2
+        # mode 1
         self.spike_channel_index_mode1 = 16 # mode 1
+        self.SPIKERawCounter = 0
         self.spike_data_buffer = ''
         self.spike_timestamp_buffer = []
         self.spike_buffer_counter = 0
         self.spike_maxlen = 1
-        self.SPIKERawCounter = 0
+        # mode 2
+        self.spike_FIFO_mode2 = coll.deque(maxlen=1000)
+        self.spike_raw_channel = [0, 1, 2, 3] # 记录当前记录spike的raw channel; mode 2
+        self.SPIKEsensorCounter_mode2 = 0
+        self.SPIKERawCounter_mode2 = 0
+        self.spike_losspackets_mode2 = 0
 
+        # remove duplicate packets and sorting acoording to timestamp and packets_index
+        self.spike_maxlen_mode2 = 3
+        self.spike_buffer_counter_mode2 = 0
+        self.spike_raw_packets_order = []
+        
+        # self.spike_data_buffer_mode2 = ''
+        self.spike_timestamp_buffer_mode2 = coll.deque(maxlen=1000)
+        
+        
         """ spike detection """
         self.calcST = []
         
@@ -252,6 +277,8 @@ class SerialPort(QThread):
         # get the raw_data_index_base
         self.get_decoding_index()
         full_frame = bytearray()
+
+        self.tiema = time.time_ns()
         while(True): # async main loop
             # read neural data containing n packets    
             # read decoded by acsii ,and the type is str ,the expected str is the stop signal; 50ms->20 packets
@@ -276,6 +303,7 @@ class SerialPort(QThread):
         self.GUIUpate_enable()
         
         read_data = self.USBFIFO.popleft()
+
         if(len(read_data)!= 0):
             read_data = str(binascii.b2a_hex(read_data ,' ', 2))
             spilt_temp = re.split('[ ][2][1][2][2][ ][2][3][2][4][ ]',read_data[2:-10])[0:-1] # 注意，这个正则化表达式很重要
@@ -344,13 +372,103 @@ class SerialPort(QThread):
                     pass
                 
                     """  spike packets: mode 2 """
-                # elif(packets_type == 2 and packet_length == 108):
-                #     pass
+                elif(packets_type == 6 and packet_length == 13): # other sensor data: 1 packets every 6ms
+                    self.SPIKEsensorCounter_mode2 += 1
+                    _ = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) # timestamp
+                    self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
+                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
+
+                    self.spike_sensor_packets_process_mode2(packets[20:] + ' ') 
+
+                    pass
+                    
+                elif(packets_type == 5 and packet_length == 126): # spike raw data with lfp: 3 packets every 6ms
+                    """ 注意，这里需要做一下包的排序，包之间的间隔过短 会出现包顺序的错乱和重复: TODO"""
+                    self.spike_buffer_counter_mode2 += 1
+                    # timestamp
+                    temp_timestamp_mode2 = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    # current index 
+                    temp_packet_index = int(packets[0:2] ,16) # index of 3 packets list
+                    # current signal
+                    self.overflowSignal[1] = int(packets[15:17] ,16) 
+                    # current recording channels
+                    self.spike_raw_channel[0] = int(packets[22:24] ,16)
+                    self.spike_raw_channel[1] = int(packets[20:22] ,16)
+                    self.spike_raw_channel[2] = int(packets[27:29] ,16)
+                    self.spike_raw_channel[3] = int(packets[25:27] ,16)
+
+                    # for test: check the send rate
+                    tiemb = time.time_ns()
+                    if(tiemb - self.tiema >= 1000 * 1000 * 1000 * 60): # 60s
+                        print("losspackets_per_sample", self.spike_losspackets_mode2/self.spike_buffer_counter_mode2, 252 * self.spike_buffer_counter_mode2 / 1000 / 60 * (120/126), "kB/s", 
+                              "error order:", self.test2/self.spike_buffer_counter_mode2) # kB/s
+                        # reinit param
+                        self.spike_buffer_counter_mode2 = 0
+                        self.spike_losspackets_mode2 = 0
+                        self.tiema = time.time_ns()
+                        self.test2 = 0
+                    if((temp_timestamp_mode2 - self.test < 0)):
+                        self.test2 += 1
+                    self.test = temp_timestamp_mode2
+
+                    self.spike_timestamp_buffer_mode2.append(temp_timestamp_mode2)
+                    self.spike_FIFO_mode2.append([temp_timestamp_mode2, temp_packet_index, self.spike_raw_channel, (packets[30:] + ' ')]) # timestamp + packet_index + channel_index + raw data
+                    
+                    # process data
+                    self.spike_raw_packets_process_mode2()
+                    pass
                 elif(packets_type == -1):
                     # other packets
                     pass
 
 
+
+    def spike_sensor_packets_process_mode2(self, sensor_data):
+        # spilt
+        temp_sensor_data = np.array(sensor_data.split(' '))[0:-1]
+        # sensor data
+        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
+        for i in range(9):
+            temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
+            # for GUI
+            self.sensordata_GUI[i].extend(temp_sensor)
+            # for file
+            # self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
+            if(i == 7):
+                # battery status
+                if(0 in temp_sensor): # TODO other situations
+                    self.batteryStatus = 0 # normal
+        pass
+
+    def spike_raw_packets_process_mode2(self):
+        if(len(self.spike_timestamp_buffer_mode2) >= self.spike_maxlen_mode2):
+            self.SPIKERawCounter_mode2 += 1 # for file saving
+            # get pop times
+            temp_copy_timestamp = self.spike_timestamp_buffer_mode2.copy()
+            temp_timestamp_list = np.array(temp_copy_timestamp)[0:self.spike_maxlen_mode2]  # print(temp_timestamp_list, np.array(temp_copy_timestamp)[0:self.spike_maxlen_mode2])
+            temp_teimstamp = np.unique(np.array(temp_timestamp_list))[0] # print(temp_teimstamp)
+            temp_pop_times = np.sum(np.array(temp_timestamp_list)==temp_teimstamp)
+
+            for _ in range(temp_pop_times): 
+                temp_mode2 = self.spike_FIFO_mode2.popleft()
+                _ = self.spike_timestamp_buffer_mode2.popleft()
+                # packet index
+                temp_packet_index = temp_mode2[1] # 0~2
+                # spilt raw data
+                temp_raw_mode2 = np.array(temp_mode2[3].split(' '))[0:-1]
+                emp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_raw_mode2))
+                # raw data
+                for i, channel_num in enumerate(temp_mode2[2]): # channel index: 4 channels : 30 points per packet per channel
+                    self.spikedata_mode2_GUI[channel_num].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
+            
+            # give to GUI buffer for timestamp
+            self.spiketimestamp_mode2_GUI.append(temp_teimstamp) # timestamp
+
+            if(temp_pop_times != 3):
+                self.spike_losspackets_mode2 += (3 - temp_pop_times)
+            # print(temp_timestamp_list, temp_pop_times, temp_teimstamp)
+            # 3. save to file TODO
+        pass
 
     def lfp_packets_process(self):
         # spilt
@@ -358,7 +476,7 @@ class SerialPort(QThread):
        
         # 1. raw data 
         for channel_num in range(16):
-            temp_channel = self.lfp_data_buffer[self.raw_data_index_base + channel_num * self.raw_data_per_packet_channel] # 注意这里要乘以6，每一个通道有6个连续的数据！！调了一整天这个bug 服了
+            temp_channel = self.lfp_data_buffer[self.raw_data_index_base + channel_num * self.raw_data_per_packet_channel] # 注意这里要乘以7，每一个通道有7个连续的数据！！调了一整天这个bug 服了
             temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
             # print(temp_channel_DAC)
             # save to file
@@ -372,7 +490,7 @@ class SerialPort(QThread):
             
         # 3. sensor data
         temp_sensor_data = self.lfp_data_buffer[self.sensor_index]
-        temp_sensor_data = np.array(list(map(lambda x:self.DAC((x)), temp_sensor_data)))
+        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
             # for GUI
@@ -404,7 +522,7 @@ class SerialPort(QThread):
             
         # 4. sensor data
         temp_sensor_data = self.spike_data_buffer[self.sensor_index]
-        temp_sensor_data = np.array(list(map(lambda x:self.DAC((x)), temp_sensor_data)))
+        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
             # for GUI
@@ -474,6 +592,7 @@ class SerialPort(QThread):
 
 
     def GUIUpate_enable(self):
+        # print(len(self.spiketimestamp_mode2_GUI))
         """ GUI update """ 
         if(len(self.lfptimestamp_GUI) >= self.GUIUpdateInterval):
             self.GUIUpdate.emit([[0], self.lfptimestamp_GUI, self.lfpdata_GUI, self.sensordata_GUI]) # mode 0
@@ -486,6 +605,12 @@ class SerialPort(QThread):
             self.spikedata_GUI = []
             self.spikerasterdata_GUI = [[] for _ in range(16)]
             self.sensordata_GUI = [[] for _ in range(9)]
+        elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval // 2):
+            self.GUIUpdate.emit([[2], self.spiketimestamp_mode2_GUI, self.spikedata_mode2_GUI, self.sensordata_GUI]) # mode 2
+            self.spiketimestamp_mode2_GUI = []
+            self.sensordata_GUI= [[] for _ in range(9)]
+            self.spikedata_mode2_GUI = [[] for _ in range(16)]
+      
           
 
     def get_decoding_index(self):
