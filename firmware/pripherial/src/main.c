@@ -81,7 +81,7 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 /********************************Sample rate**********************************/
 bool mode_switch_flag = false; 
 
-u16_t sampe_mode = 2; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
+u16_t sampe_mode = 0; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
 uint32_t timer_period = 26; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
 uint32_t reset_ticks_value = SPI_RX_BUF_SIZE;
 
@@ -174,8 +174,8 @@ struct esb_payload timestamp_payload; // neural signal alignment required
 /*
 * 通过IMU来读取一定sample rate的3轴数据，在单次包的发送中，将该数据放入并一起发送到上位机；
 */
-u16_t imu_data[6];
-u16_t lc_data[3];// not used
+int16_t imu_data[6];
+int16_t lc_data[3];// TODO not used
 
 struct IMU_settings settings;
 
@@ -183,6 +183,7 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 	int err;
         // init lsm spim
         err= lsm_spim_init();
+        k_sleep(K_MSEC(20));
         LOG_INF("lsmspi init %d \n" ,err);
 	// 初始化 LSM
 	err = LSM6DS3_who_am_i();
@@ -200,9 +201,10 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 	}
         LOG_INF("LSM init success\n");
 	err = LSM6DS3_init(); // 注意使用 high sample rate 的accle采样的时候要提前开启high performance mode ;同时active gryo 
-	if(err != NRFX_SUCCESS){
+	if(err != 0){
                 while(1){
                         LED_hinting(500, 2);
+                        LOG_INF("LSM6DS3_init %x \n" ,err);
                         k_sleep(K_SECONDS(1));
                 };
         }
@@ -210,14 +212,12 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 
 }
 
-void LSM6DS3_Read(u16_t *data){ // only recording 3-axis
+void LSM6DS3_Read(void){ // only recording 3-axis
         /*
         * 记录 6-axis的值；关闭 角加速度测量；注意：在lsm_init中要对应开启角加速度mode和配置寄存器
         */
-	LSM6DS3_read_accl_data(data ,data + 1 ,data + 2);
-	LSM6DS3_read_gyro_data(data + 3 ,data + 4 ,data + 5);
-        // LSM6DS3_read_accl_data(&data);
-        // LSM6DS3_read_gyro_data(&data[3]);
+	LSM6DS3_read_accl_data();
+	LSM6DS3_read_gyro_data();
 }
 
 
@@ -246,8 +246,6 @@ u16_t init_everything(void){
         memset(lc_data, 0, sizeof(lc_data));
         
         setup_sensor();
-        k_sleep(K_SECONDS(1));
-
         /**************** ESB init ******************/     
         err = clocks_start();
 	if (err)
@@ -504,8 +502,6 @@ void get_MUA_data(u16_t channel_num)
 	}
 }
 
-
-
 void running_time_offset(uint8_t test){
         LOG_INF("%u us running time! %d test \n", k_cyc_to_us_floor32(k_cycle_get_32()) - timerecording, test);
 }
@@ -592,18 +588,18 @@ int main(void)
                         nrfx_gpiote_out_set(&gpiote_instance, NRFX_SPIM_SS_PIN); // reset the CS line to disable
                         
                         /* begining sample */
-                        LED_hinting(100, 10);
+                        // LED_hinting(100, 10);
                         gpio_pin_set_dt(&led, 1); // clear the led
                         buffer_is_full = false;
                         sampling = true;
                         overflow_signal = !overflow_signal;
                         RHD_tx_buf_setup();
 
-                        // err = timestamp_payload_wrap();
-                        // if(err){
-                        //         esb_flush_tx();
-                        //         LOG_INF("%d esb timestamp payload failed", err);
-                        // }
+                        err = timestamp_payload_wrap();
+                        if(err){
+                                esb_flush_tx();
+                                LOG_INF("%d esb timestamp payload failed", err);
+                        }
                         timer_start(sampe_mode);
 
                         k_sleep(K_FOREVER);
@@ -628,10 +624,10 @@ int main(void)
 
                 /*** 0.1. imu lc data read ***/
                         // 注意： memset 效率不高这个memset 函数
-                        if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu sample
+                        if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
-                                LSM6DS3_Read(imu_data); // 500us 6-axis blocking mode
+                                LSM6DS3_Read(); // 500us 6-axis blocking mode
                         }
 
                 /*** 1. structured copy rx_buf data ***/
@@ -656,9 +652,6 @@ int main(void)
                                         if(esb_tx_full()){ // remove one oldest packets
                                                 esb_pop_tx();
                                         }
-                                        // // for test
-                                        // imu_data[3] = (u16_t)spi_overflow_flag; 
-                                        // imu_data[4] = (u16_t)(spi_overflow_flag >> 16); 
 
                                         /* for single raw channel MUA_BIN_SIZE: 18 ;SPIKE_SAMPLE_POINT_NUM: 90 */
                                         err = spike_tx_payload_wrap(spike_channel_array[recorded_spike_channel], MutiUnitActivityArray, 

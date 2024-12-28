@@ -114,10 +114,11 @@ nrfx_err_t lsm_spim_init(void){
 
 nrfx_err_t data_write(uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device)
 {
-  // 这里的datalen 是 pData 的datalen ,一般取1 ，单字节的写入寄存器
+    // 这里的datalen 是 pData 的datalen ,一般取1 ，单字节的写入寄存器
+    
     nrfx_err_t errCode = NRFX_SUCCESS;
-    uint8_t temp_addr = regAddr;
-    temp_addr = temp_addr & 0b01111111;
+    // uint8_t temp_addr = regAddr;
+    // temp_addr = temp_addr & 0b01111111;
     mergeRegisterAndData(twimWriteDataBuffer, regAddr, pData, dataLen);
     nrfx_spim_xfer_desc_t xfer_desc = NRFX_SPIM_XFER_TX(twimWriteDataBuffer, dataLen + 1);
 	  nrfx_spim_xfer(&lsm_spi, &xfer_desc, 0); 

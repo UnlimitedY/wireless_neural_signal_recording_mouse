@@ -68,11 +68,11 @@ int timestamp_payload_wrap(void);
 // empty_payload wrap function: when sample stopping
 int empty_payload_wrap(void);
 // tx_payload wrap function: when sample working mode 0
-int tx_payload_wrap(u16_t *Raw_data, u16_t *imu_data, u16_t *lc_data, u16_t raw_length);
+int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t raw_length);
 // tx_payload wrap function: when sample working: mode 1
-int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, u16_t *imu_data, u16_t *lc_data,  u16_t spike_raw_length, u8_t packet_index);
+int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t spike_raw_length, u8_t packet_index);
 // mode 2
 int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u8_t *packet_index, u8_t counter);
-int spike_sensor_tx_payload_wrap(u16_t *imu_data, u16_t *lc_data);
+int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data);
 
 #endif

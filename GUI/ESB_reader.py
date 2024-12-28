@@ -421,13 +421,14 @@ class SerialPort(QThread):
                     # other packets
                     pass
 
-
-
     def spike_sensor_packets_process_mode2(self, sensor_data):
         # spilt
         temp_sensor_data = np.array(sensor_data.split(' '))[0:-1]
         # sensor data
-        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
+        temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])))
+        temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
+        # TODO LC data
+        temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
             # for GUI
@@ -490,7 +491,12 @@ class SerialPort(QThread):
             
         # 3. sensor data
         temp_sensor_data = self.lfp_data_buffer[self.sensor_index]
-        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
+        # sensor data
+        temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])))
+        temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
+        # TODO LC data
+        temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
+        
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
             # for GUI
@@ -506,8 +512,6 @@ class SerialPort(QThread):
     def spike_packets_process(self):
         # spilt
         self.spike_data_buffer = np.array(self.spike_data_buffer.split(' '))[0:-1]
-        # if(self.SPIKERawCounter % 1000 == 0):
-        #     print(self.spike_data_buffer)
         # 1. raw data + timestamp
         temp_channel = self.spike_data_buffer[13:-5] 
         temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
@@ -522,7 +526,11 @@ class SerialPort(QThread):
             
         # 4. sensor data
         temp_sensor_data = self.spike_data_buffer[self.sensor_index]
-        temp_sensor_data = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data)))
+        # sensor data
+        temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])), dtype=np.float32)
+        temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])), dtype=np.float32)
+        # TODO LC data
+        temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])), dtype=np.float32)
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
             # for GUI
@@ -557,14 +565,14 @@ class SerialPort(QThread):
             miss_packets = np.argwhere((timestamp_diff > self.LFP_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
             self.raw_data["MissPacketsIndex"] = miss_packets
             # number
-            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.LFP_max_interval) - 1
+            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.LFP_max_interval)
             # print(list(timestamp_diff[miss_packets]))
             miss_packets_num = np.sum(miss_packets_num.flatten())
             self.raw_data["MissPackets"] = miss_packets_num
-            print("miss counter one file {} {} delay {} recieved_all {}".format(miss_packets_num ,
-                                                                             miss_packets_num/self.file_size ,
-                                                                             np.sum(timestamp_diff), 
-                                                                             self.receive_num_packet))
+            # print("miss counter one file {} {} delay {} recieved_all {}".format(miss_packets_num ,
+            #                                                                  miss_packets_num/self.file_size ,
+            #                                                                  np.sum(timestamp_diff), 
+            #                                                                  self.receive_num_packet))
                 
             # 2. save the file
             """ load methods
@@ -589,7 +597,6 @@ class SerialPort(QThread):
 
     def save_spike_mode1_file(self):
         pass
-
 
     def GUIUpate_enable(self):
         # print(len(self.spiketimestamp_mode2_GUI))
@@ -629,12 +636,26 @@ class SerialPort(QThread):
         self.sensor_index = np.sort(self.sensor_index)
         self.sensor_index = np.array(self.sensor_index, dtype=np.int64)
 
+    def LSM6DS3_accelData_in_g(self, x): # 2g range
+        return float((x * 0.061 * (2 >> 1)) / 1000 )
+    
+    def LSM6DS3_gyroData_in_dps(self, x): # 500 range
+        gyro_range_divisor = 500 / 125
+        return float((x * 4.375 * gyro_range_divisor) / 1000)
 
-    def DAC(self ,x ,raw=True): 
+
+    def DAC(self ,x ,raw=True, two_complement=False): 
         if raw:
-            return int(x ,16) # n
+            if(two_complement):
+                if (int(x, 16) < int('8000', 16)): # positive value
+                    return int(x, 16)
+                else: # negative value
+                    a = int(x, 16) 
+                    return a - 2**(len(x) * 4)
+            else:
+                return int(x ,16) # n
         else:
-            return (float(int(x ,16) * self.DAC_resolution) - 1.225) / 192 * 1000 * 1000  # uV 放大 192 倍
+            return (float(int(x ,16) * self.DAC_resolution) - 1.225) / 192 * 1000 * 1000  # uV 放大 192 倍 use unsigned offset 
 
 
     def flush(self):
@@ -659,34 +680,34 @@ class SerialPort(QThread):
 
 ##################################################################################################################
 # test 
-from time import sleep
-serialPort="COM12"   #串口
-baudRate=20000000      #波特率
+# from time import sleep
+# serialPort="COM12"   #串口
+# baudRate=20000000      #波特率
 
-channel = 0
-if __name__=='__main__':
+# channel = 0
+# if __name__=='__main__':
    
-    mSerial = SerialPort(serialPort ,baudRate)
-    mSerial.port_open()
+#     mSerial = SerialPort(serialPort ,baudRate)
+#     mSerial.port_open()
 
-    process = threading.Thread(target=mSerial.run)
-    process.start()
+#     process = threading.Thread(target=mSerial.run)
+#     process.start()
     
-    test_switch = False
-    while(True):
-        user_input = input("control key:")
-        if user_input:
-            test_switch = not test_switch
-            if test_switch:
-                # data = [0x01 ,0x00] # begin
-                data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00]
-                channel += 1 
-            else:
-                # data = [0x02 ,0x00] # stop
-                data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00] 
-                channel += 1 
-            mSerial.send_data(data)
-            print(test_switch, channel)
-            user_input = 0
-        else:
-            mSerial.port_close()
+#     test_switch = False
+#     while(True):
+#         user_input = input("control key:")
+#         if user_input:
+#             test_switch = not test_switch
+#             if test_switch:
+#                 # data = [0x01 ,0x00] # begin
+#                 data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00]
+#                 channel += 1 
+#             else:
+#                 # data = [0x02 ,0x00] # stop
+#                 data = [0x00, 0x04 ,int(hex(channel) ,16) ,0x00] 
+#                 channel += 1 
+#             mSerial.send_data(data)
+#             print(test_switch, channel)
+#             user_input = 0
+#         else:
+#             mSerial.port_close()

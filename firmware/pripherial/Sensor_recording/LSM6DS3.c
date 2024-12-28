@@ -12,7 +12,6 @@
 #include "time.h"
 #include "LSM6DS3.h"
 
-
 /**
  * @brief function to test availablility of IMU by reading WHO_AM_I register.
  */
@@ -36,10 +35,9 @@ int LSM6DS3_who_am_i(void)
 /**
  * @brief function to initialize IMU sensor.
  */
-nrfx_err_t LSM6DS3_init(void)
+uint8_t LSM6DS3_init(void)
 {
-  nrfx_err_t err_code;
-
+  uint8_t err_code;
   settings.accel_enable           = 1;      // 0 - Disable. 1 - Enable
   settings.accel_range            = 2;      // Full Scale(FS) range (in g). Select from: 2, 4, 8, 16
   settings.accel_samplerate       = 104;    // Hz. Select from: 13, 26, 52, 104, 208, 416, 833, 1666
@@ -61,21 +59,16 @@ nrfx_err_t LSM6DS3_init(void)
 	settings.FIFO_samplerate 		    = 13;     //default 13Hz
 	settings.FIFO_mode 			        = 6;      //Default off
 
-  // // 注意： 这里要disable iic 的bus ，否则会导致漏电功耗上升
+  // 注意： 这里要disable iic 的bus ，否则会导致漏电功耗上升
   uint8_t tx_data[2] = {MASTER_CONFIG, 0x00};
   err_code = data_write(tx_data[0] ,&tx_data[1], 1, 1);
-  if(err_code != NRFX_SUCCESS){
-    return err_code;
-  }
   // set IF_INC in CTRL3_C register. set BDU : block mode for low-power
   tx_data[0] = CTRL3_C;
   tx_data[1] = 0x44;
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
-  if(err_code != NRFX_SUCCESS){
-    return err_code;
-  }
-  LSM6DS3_config();
-  return NRFX_SUCCESS;
+
+  err_code = LSM6DS3_config();
+  return err_code;
 }
 
 /**
@@ -91,7 +84,7 @@ nrfx_err_t LSM6DS3_init(void)
  * Bit[3:2] are reserved for full scale range sselection from 245 dps, 500 dps, 1000 dps and 2000 dps
  * Bit[7:4] are reserved for output data rate selection.
  */
-void LSM6DS3_config(void)
+uint8_t LSM6DS3_config(void)
 {
   nrfx_err_t err_code;
   uint8_t tx_data[2];
@@ -101,24 +94,24 @@ void LSM6DS3_config(void)
   tx_data[1] = 0;
   if(settings.accel_enable == 1) {
     // Bandwidth lowpass filter
-    switch(settings.accel_bandwidth) {
-      case 50:
-              tx_data[1] |= LSM6DS3_IMU_BW_XL_50Hz;
-              break;
+    // switch(settings.accel_bandwidth) {
+    //   case 50:
+    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_50Hz;
+    //           break;
 
-      case 100:
-              tx_data[1] |= LSM6DS3_IMU_BW_XL_100Hz;
-              break;
+    //   case 100:
+    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_100Hz;
+    //           break;
 
-      case 200:
-              tx_data[1] |= LSM6DS3_IMU_BW_XL_200Hz;
-              break;
+    //   case 200:
+    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_200Hz;
+    //           break;
 
-      default:
-      case 400:
-              tx_data[1] |= LSM6DS3_IMU_BW_XL_400Hz;
-              break;
-    }
+    //   default:
+    //   case 400:
+    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_400Hz;
+    //           break;
+    // }
 
     // Full scale range
     switch(settings.accel_range) {
@@ -194,7 +187,6 @@ void LSM6DS3_config(void)
   }
 
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
-  // APP_ERROR_CHECK(err_code);
 
   // configure gyroscope
   tx_data[0] = CTRL2_G;
@@ -265,13 +257,18 @@ void LSM6DS3_config(void)
   }
 
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
-    // APP_ERROR_CHECK(err_code);
-    // LSM6DS3_set_accel_high_performance_mode(settings.accel_samplerate);
+
   LSM6DS3_set_accel_normal_mode(settings.accel_samplerate);
   LSM6DS3_set_gyro_active_mode();
-    // LSM6DS3_set_accel_power_down_mode();
-    // LSM6DS3_set_gyro_sleep_mode(); 
-  // enable all sample
+  
+  uint8_t config_return = 0;
+
+  return config_return;
+  // LSM6DS3_set_accel_high_performance_mode(settings.accel_samplerate);
+  // LSM6DS3_set_accel_power_down_mode();
+  // LSM6DS3_set_gyro_sleep_mode(); 
+
+  // enable all sample: default enabled not used
   // LSM6DS3_accel_enable();
   // LSM6DS3_gyro_enable();
 }
@@ -279,22 +276,10 @@ void LSM6DS3_config(void)
 
 void LSM6DS3_accel_enable(void)
 {
-  // nrfx_err_t err_code;
-  // uint8_t tx_data[2] = {CTRL9_XL, 0};
-
-  // // tx_data[1] = ;
-
-  // err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
 }
 
 void LSM6DS3_gyro_enable(void)
 {
-  // nrfx_err_t err_code;
-  // uint8_t tx_data[2] = {CTRL10_C, 0};
-
-  // tx_data[1] = ;
-
-  // err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
 }
 
 /**
@@ -397,11 +382,11 @@ void LSM6DS3_set_accel_normal_mode(uint16_t value)
   switch(value) {
     default:
     case 104:
-      tx_data[1] |= (0x04 << 4) | (rx_data & 0x0F);
+      tx_data[1] = (0x04 << 4) | (rx_data & 0x0F);
       break;
 
     case 208:
-      tx_data[1] |= (0x05 << 4) | (rx_data & 0x0F);
+      tx_data[1] = (0x05 << 4) | (rx_data & 0x0F);
       break;
   }
 
@@ -465,35 +450,26 @@ void LSM6DS3_set_accel_high_performance_mode(uint16_t value)
 /**
  * @brief function to read accelerometer data
  */
-void LSM6DS3_read_accl_data(uint16_t *accl_x ,uint16_t *accl_y ,uint16_t *accl_z)
-// void LSM6DS3_read_accl_data(uint16_t *acc)
+// void LSM6DS3_read_accl_data(uint16_t *accl_x ,uint16_t *accl_y ,uint16_t *accl_z)
+void LSM6DS3_read_accl_data()
 {
   nrfx_err_t err_code;
-  uint8_t status = 0;
-  uint8_t data[6] = {0, 0, 0, 0, 0, 0};
+  uint8_t data[6] = {0, 0, 0, 0 ,0 ,0};
 
-  uint16_t a;
-  uint16_t b;
-
-  // check the IMU status Accelerometer new data available
-  // do {
-  //   err_code = data_read(&status_register, &status, sizeof(status), 1);
-  // } while(!(status & 0x01));
+  uint8_t status_reg;
+  data_read(STATUS_REG, (uint8_t *)&status_reg, 1, 1);
+  status_reg = status_reg & 0x01;
+  if(status_reg){
   
-  err_code = data_read(OUTX_L_XL, data, sizeof(data), 1); 
+    err_code = data_read(OUTX_L_XL, data, 6, 1); 
+    imu_data[0] = (int16_t)data[1];
+    imu_data[0] = (imu_data[0] * 256) + (int16_t)data[0];
+    imu_data[1] = (int16_t)data[3];
+    imu_data[1] = (imu_data[1] * 256) + (int16_t)data[2];
+    imu_data[2] = (int16_t)data[5];
+    imu_data[2] = (imu_data[2] * 256) + (int16_t)data[4];
+  }
   
-  a = data[1];
-  b = data[0];
-  *accl_x = (a << 8) | b;
-  a = data[3];
-  b = data[2];
-  *accl_y = (a << 8) | b;
-  a = data[5];
-  b = data[4];
-  *accl_z = (a << 8) | b;
-  // acc[0] = (data[1] << 8) |data[0];
-  // acc[1] = (data[3] << 8) |data[2];
-  // acc[2] = (data[5] << 8) |data[4];
 }
 
 /**
@@ -539,35 +515,25 @@ void LSM6DS3_set_gyro_active_mode()
 /**
  * @brief functioon to read gyroscope data.
  */
-void LSM6DS3_read_gyro_data(uint16_t *gyro_x, uint16_t *gyro_y, uint16_t *gyro_z)
+void LSM6DS3_read_gyro_data()
 // void LSM6DS3_read_gyro_data(uint16_t *gyro)
 {
   nrfx_err_t err_code;
-  uint8_t status = 0;
-  uint8_t data[6];
-
-  uint16_t a;
-  uint16_t b;
-
-  // do {
-  //   err_code = data_read(STATUS_REG, &status, sizeof(status), 1);
-  // } while(!(status & 0x02));
+  uint8_t data[6] = {0 ,0 , 0 ,0 ,0 ,0};
+  uint8_t status_reg;
+  data_read(STATUS_REG, (uint8_t *)&status_reg, 1, 1);
+  status_reg = status_reg & 0x02;
+  if(status_reg){
 
   err_code = data_read(OUTX_L_G, data, sizeof(data), 1); // 6 bytes ; X ,Y ,Z axis; 16bits value; 
-  // using two's compleme, 1nt
 
-  a = data[1];
-  b = data[0];
-  *gyro_x = (a << 8) | b;
-  a = data[3];
-  b = data[2];
-  *gyro_y = (a << 8) | b;
-  a = data[5];
-  b = data[4];
-  *gyro_z = (a << 8) | b;
-  // gyro[0] = (data[1] << 8) |data[0];
-  // gyro[1] = (data[3] << 8) |data[2];
-  // gyro[2] = (data[5] << 8) |data[4];
+  imu_data[3] = (int16_t)data[1];
+  imu_data[3] = (imu_data[3] * 256) + (int16_t)data[0];
+  imu_data[4] = (int16_t)data[3];
+  imu_data[4] = (imu_data[4] * 256) + (int16_t)data[2];
+  imu_data[5] = (int16_t)data[5];
+  imu_data[5] = (imu_data[5] * 256) + (int16_t)data[4];
+  }
 }
 
 /**

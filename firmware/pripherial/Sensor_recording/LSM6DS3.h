@@ -14,6 +14,8 @@
 #include "sensor_driver.h"
 
 
+extern int16_t imu_data[6];
+
 /*Device Address*/
 #define LSM6DS3_ADDR           0x6B     // SA0 HIGH.
 // #define LSM6DS3_ADDR           0x6AU     // SA0 LOW.
@@ -1746,7 +1748,7 @@ extern struct IMU_settings settings;
 /**
  * @brief function to initialize IMU sensor.
  */
-nrfx_err_t LSM6DS3_init(void);
+uint8_t LSM6DS3_init(void);
 
 /**
  * @brief function to read sensor registers.
@@ -1771,7 +1773,7 @@ int LSM6DS3_who_am_i(void);
  * Bit[3:2] are reserved for full scale range sselection from 245 dps, 500 dps, 1000 dps and 2000 dps
  * Bit[7:4] are reserved for output data rate selection.
  */
-void LSM6DS3_config();
+uint8_t LSM6DS3_config();
 
 /**
  * @brief function to enable power down mode in accelerometer
@@ -1806,8 +1808,8 @@ void LSM6DS3_set_accel_high_performance_mode(uint16_t value);
 /**
  * @brief function to read accelerometer data
  */
-void LSM6DS3_read_accl_data(uint16_t *accl_x ,uint16_t *accl_y ,uint16_t *accl_z);
-// void LSM6DS3_read_accl_data(uint16_t *acc);
+// void LSM6DS3_read_accl_data(uint16_t *accl_x ,uint16_t *accl_y ,uint16_t *accl_z);
+void LSM6DS3_read_accl_data();
 
 
 
@@ -1834,7 +1836,7 @@ void LSM6DS3_set_gyro_sleep_mode();
 /**
  * @brief functioon to read gyroscope data.
  */
-void LSM6DS3_read_gyro_data(uint16_t *gyro_x, uint16_t *gyro_y, uint16_t *gyro_z);
+void LSM6DS3_read_gyro_data();
 // void LSM6DS3_read_gyro_data(uint16_t *gyro);
 
 

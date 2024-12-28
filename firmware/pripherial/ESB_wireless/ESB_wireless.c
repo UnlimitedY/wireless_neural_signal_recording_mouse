@@ -220,7 +220,7 @@ int empty_payload_wrap(void){
     return esb_write_payload(&empty_payload); // wirte 对应 tx ,将packet加入到tx buffer中
 }
 
-int tx_payload_wrap(u16_t *Raw_data, u16_t *imu_data, u16_t *lc_data, u16_t raw_length){ // LFP recording
+int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t raw_length){ // LFP recording
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
@@ -235,14 +235,14 @@ int tx_payload_wrap(u16_t *Raw_data, u16_t *imu_data, u16_t *lc_data, u16_t raw_
     // 3. twi data:  6-acc or 3-acc data 
     for (int i = 0; i < 6; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(imu_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(imu_data + i);
     }
     txbufIndex += 6;
 
     // 4. BatterPower data: fixed 3 u16_t
     for (int i = 0; i < 3; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(lc_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(lc_data + i);
     }
     txbufIndex += 3;
 
@@ -258,7 +258,7 @@ int tx_payload_wrap(u16_t *Raw_data, u16_t *imu_data, u16_t *lc_data, u16_t raw_
     return esb_write_payload(&tx_payload); 
 }
 
-int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, u16_t *imu_data, u16_t *lc_data, u16_t spike_raw_length, u8_t packet_index){
+int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data, u16_t spike_raw_length, u8_t packet_index){
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
@@ -273,14 +273,14 @@ int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, u16_t
     // 3. twi data:  6-acc or 3-acc data 
     for (int i = 0; i < 6; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(imu_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(imu_data + i);
     }
     txbufIndex += 6;
 
     // 4. BatterPower data: fixed 3 u16_t
     for (int i = 0; i < 3; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(lc_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(lc_data + i);
     }
     txbufIndex += 3;
 
@@ -331,7 +331,7 @@ int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u
     return esb_write_payload(&tx_payload); 
 }
 
-int spike_sensor_tx_payload_wrap(u16_t *imu_data, u16_t *lc_data){
+int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data){
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
@@ -346,14 +346,14 @@ int spike_sensor_tx_payload_wrap(u16_t *imu_data, u16_t *lc_data){
     // 3. twi data:  6-acc or 3-acc data 
     for (int i = 0; i < 6; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(imu_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(imu_data + i);
     }
     txbufIndex += 6;
 
     // 4. BatterPower data: fixed 3 u16_t
     for (int i = 0; i < 3; i++)
     {
-        tx_payload.data[txbufIndex + i] = (u16_t)*(lc_data + i);
+        tx_payload.data[txbufIndex + i] = (int16_t)*(lc_data + i);
     }
     txbufIndex += 3;
 

@@ -130,7 +130,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.updateSTflag = [0 for _ in range(self.spike_channel_num)]
 
         """ build  widgets containing these charts """
-        pg.setConfigOption('background', '#666666')
+        pg.setConfigOption('background', '#797979')
         pg.setConfigOption('foreground', 'w')
         
         """ raw data graph spike mode 1"""
@@ -248,6 +248,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.SR_v1_channel.setXRange(0 ,self.spike_raster_display_data_num) 
         
         """ other sensors graph """
+        self.IMU_yrange_accle = 2
+        self.IMU_yrange_gryo = 500
         # accle 3-axis
         self.accl_view_channel = pg.ViewBox() # 定义一个视图框
         self.accl_channel = pg.GraphicsView() # 设置 绘图
@@ -259,7 +261,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.accl_layout_channel.addItem(self.accl_pI_channel, row = 1, col = 1)# 将这个曲线层放到中间
         self.accl_layout_channel.scene().addItem(self.accl_view_channel)
         self.accl_view_channel.setXLink(self.accl_v1_channel)
-        self.accl_pI_channel.getAxis("left").setLabel('accl', color='#FFC0CB')
+        self.accl_pI_channel.getAxis("left").setLabel('accl/g', color='#FFC0CB')
         self.accl_pI_channel.addLegend()
         
         self.IMU_accl_channel = [] ## accle 3-axis lines
@@ -272,8 +274,9 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.accl_v1_channel.addItem(self.accle_updating_indicater)
         
         self.accl_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.accl_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=-self.IMU_yrange_accle, yMax=self.IMU_yrange_accle) # 1mv range
         self.accl_v1_channel.setXRange(0 ,self.LSR_display_data_num) 
-        self.accl_v1_channel.setYRange(-100 ,65535)
+        self.accl_v1_channel.setYRange(-self.IMU_yrange_accle ,self.IMU_yrange_accle)
         
         # Gryo 3-axis
         self.gryo_view_channel = pg.ViewBox() # 定义一个视图框
@@ -286,7 +289,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.gryo_layout_channel.addItem(self.gryo_pI_channel, row = 1, col = 1)# 将这个曲线层放到中间
         self.gryo_layout_channel.scene().addItem(self.gryo_view_channel)
         self.gryo_view_channel.setXLink(self.gryo_v1_channel)
-        self.gryo_pI_channel.getAxis("left").setLabel('gryo', color='#FFC0CB')
+        self.gryo_pI_channel.getAxis("left").setLabel('gryo/dps', color='#FFC0CB')
         self.gryo_pI_channel.addLegend()
         
         self.IMU_gryo_channel = [] # Gryo 3-axis lines
@@ -294,8 +297,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
             self.IMU_gryo_channel.append(pg.PlotCurveItem(None, None,pen=self.colorList[i] ,name=self.IMUgryo_name[i] ,symbol='o'))
             self.gryo_v1_channel.addItem(self.IMU_gryo_channel[i])
         self.gryo_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
-        self.gryo_v1_channel.setYRange(-100 ,100)
-        self.gryo_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=-1000, yMax=5000) # 1mv range
+        self.gryo_v1_channel.setYRange(-self.IMU_yrange_gryo ,self.IMU_yrange_gryo)
+        self.gryo_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=-self.IMU_yrange_gryo, yMax=self.IMU_yrange_gryo) # 1mv range
         
         # battery RSOC
         self.RSOC_view_channel = pg.ViewBox() # 定义一个视图框
@@ -602,8 +605,11 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                     self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
                 self.ring_LSR_pointer = temp_onset
             else:
-                for i in range(6):
-                    self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
+                try:
+                    for i in range(6):
+                        self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
+                except:
+                    print(sensors_data[i])
                 self.ring_LSR_pointer = sensor_end_point
 
     
