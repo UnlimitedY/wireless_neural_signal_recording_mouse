@@ -52,6 +52,10 @@ void LED_hinting(uint32_t interval, uint32_t eventNum){
 struct ring_buf ringbuf;
 u8_t ring_buffer[RING_BUF_SIZE];
 
+/*****************for alignment*****************/
+// timestamp Habits: get from PC
+uint32_t timestamp_HABITS = 0;
+
 /**************************************** esb setup********************************************************/
 u16_t drop_packets_num = 0;
 int free_size_ringbuff = 0;
@@ -61,6 +65,9 @@ u16_t esb_packets_length = 0;
 u8_t tx_buffer_temp[USBTX_PACKETS_SIZE * 252 + 1000]; // 注意：这个决定了一次传输包的最大数量
 int packets_accumul = 0;
 int packets_accumul_num = 0;
+
+u8_t timestamp_alignment_buffer[1000];
+u8_t usb_packets_address[8] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26 ,0x27, 0x28};
 
 // for test
 int last_packet_counter[2] = {0, 0};
@@ -104,11 +111,6 @@ static void interrupt_handler(const struct device *dev, void *user_data) // UART
 			}
 			
 		}
-
-		// /*Check if UART TX buffer can accept a new char from esb*/
-		// if (uart_irq_tx_ready(dev)){
-			
-		// }
 	}
 }
 
@@ -126,14 +128,18 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 	while(esb_read_rx_payload(&rx_payload)==0){
 			if(rx_payload.length > 0){
 				counter_loop++;
+
+				// timestamp alignment
+				if(rx_payload.data[0] == 0x0300){
+					rx_payload.data[rx_payload.length/2] = 0x2221;
+					rx_payload.data[rx_payload.length/2 + 1] = 0x2423;
+					rx_payload.data[rx_payload.length/2 + 2] = 0x2625;
+					rx_payload.data[rx_payload.length/2 + 3] = 0x2827;
+					send_len = uart_fifo_fill(dev, rx_payload.data, rx_payload.length + 8);
+					continue;
+				}
+
 				if(counter_loop % 500 == 0){
-					// result: 2khz, 16 channel -> 10000 packets: (ideal) ~30600ms (experiments) [30938, 30814, 30966 ms] in 串口调试助手 or custom uart reading; 0.003 loss rate
-					// LOG_INF("test recording %d %d \n" ,rx_payload.data[1] - last_packet_counter[0] ,rx_payload.data[2] - last_packet_counter[1]);
-				 	// LOG_INF("packet %d  \n"  ,counter_loop);
-
-					last_packet_counter[0] = rx_payload.data[1];
-					last_packet_counter[1] = rx_payload.data[2];
-
 					gpio_pin_toggle_dt(&led);
 				}
 
@@ -147,7 +153,6 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 				free_size_ringbuff = ring_buf_space_get(&ringbuf); // in bytes
 				if(free_size_ringbuff < esb_packets_length){
 					drop_packets_num++;
-					// LOG_INF("Drop packets: %d %x", drop_packets_num, rx_temp_payload[rx_payload.length/2 - 1]);
 				}
 				else{ // put the received data to ring buff
 					recv_len_esb = ring_buf_put(&ringbuf, rx_temp_payload, esb_packets_length);
@@ -170,7 +175,6 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 						tx_buffer_temp[packets_accumul + 3] = 0x28;
 						packets_accumul = packets_accumul + 4;
 
-						// LOG_INF("TXBUFFER %x %x !", tx_buffer_temp[0], tx_buffer_temp[2]);
 						// 注意：这里fifo满之后可能会发送不足一个包的数量导致包数据从中间截断，在pc 端丢弃这个包
 						send_len = uart_fifo_fill(dev, tx_buffer_temp, packets_accumul);
 						if(send_len !=  packets_accumul){
@@ -180,9 +184,6 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 						packets_accumul_num = 0;
 					}
 				}
-
-				// for test
-				// last_package_counter = rx_payload.data[2];
 			}
 		}
 	break;
@@ -342,7 +343,6 @@ int main(void)
 	uart_irq_rx_enable(dev);
 	// main loop
 	while (true){
-		// TODO receive events from HABITS 
 		k_sleep(K_FOREVER);
 	} // main loop 
 

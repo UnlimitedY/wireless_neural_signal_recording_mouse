@@ -316,6 +316,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.battery_RSOC_channel = pg.PlotCurveItem(None, None,pen='#FFFFFF') # battery RSOC lines
         self.RSOC_v1_channel.addItem(self.battery_RSOC_channel)
         self.RSOC_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.RSOC_v1_channel.setYRange(0 ,100)
+        self.RSOC_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=0, yMax=100) # 0-100%
         
         # battery temp
         self.Btemp_view_channel = pg.ViewBox() # 定义一个视图框
@@ -333,6 +335,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.battery_Btemp_channel = pg.PlotCurveItem(None, None,pen='#FFFFFF') # battery temp line
         self.Btemp_v1_channel.addItem(self.battery_Btemp_channel)
         self.Btemp_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.Btemp_v1_channel.setYRange(0 ,50)
+        self.Btemp_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=0, yMax=50) # 摄氏度
         
         """ addWidget """
         self.verticalLayout_3.addWidget(self.spike_channel)
@@ -463,9 +467,9 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 self.IMU_gryo_channel[imu_channel].setData(self.LSR_timestamp ,self.IMUdata[imu_channel + 3] ,name=self.IMUgryo_name[imu_channel] ,
                                                  pen=pg.mkPen({'color': self.colorList[imu_channel] ,'width':1}),symbol='o')
             
-            # # battery data
-            # self.battery_RSOC_channel.setData(self.LSR_timestamp ,self.IMUdata[imu_channel] ,name=self.IMUaccle_name[imu_channel] ,
-            #                                      pen=pg.mkPen({'color': self.colorList[imu_channel] ,'width':1}),symbol='o')
+            # battery data
+            self.battery_RSOC_channel.setData(self.LSR_timestamp ,self.RSOC[0], pen=pg.mkPen({'color': self.colorList[0] ,'width':1}),symbol='o')
+            self.battery_Btemp_channel.setData(self.LSR_timestamp ,self.battery_temp[0], pen=pg.mkPen({'color': self.colorList[0] ,'width':1}),symbol='o')
              
     def raw_data_generator(self ,port, data):
         """
@@ -596,18 +600,27 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
 
 
             """ sensing data 9 data """
-            sensors_data = np.array(data[3])
+            sensors_data = np.array(data[3], dtype=np.float32)
             sensor_end_point = self.ring_LSR_pointer + len(sensors_data[0])
             if(sensor_end_point > self.LSR_display_data_num):
                 temp_onset = sensor_end_point - self.LSR_display_data_num
                 for i in range(6):
                     self.IMUdata[i][self.ring_LSR_pointer:] = sensors_data[i][0:-temp_onset]
                     self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
+
+                self.RSOC[0][self.ring_LSR_pointer:] = sensors_data[6][0:-temp_onset]
+                self.RSOC[0][0:temp_onset] = sensors_data[6][-temp_onset:]
+
+                self.battery_temp[0][self.ring_LSR_pointer:] = (sensors_data[8][0:-temp_onset]) / 10 - 273.15
+                self.battery_temp[0][0:temp_onset] = sensors_data[8][-temp_onset:] / 10 - 273.15
+                
                 self.ring_LSR_pointer = temp_onset
             else:
                 try:
                     for i in range(6):
                         self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
+                    self.RSOC[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[6]
+                    self.battery_temp[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[8] / 10 - 273.15
                 except:
                     print(sensors_data[i])
                 self.ring_LSR_pointer = sensor_end_point
@@ -664,6 +677,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
             if self.comboBoxList[0].currentIndex() not in self.mSerial_disable:
                 # start read data from Serial
                 self.mSerial[self.comboBoxList[0].currentIndex()] = SerialPort(self.comboBoxList[0].currentText(),2000000)
+                self.mSerial[self.comboBoxList[0].currentIndex()].load_parameters() # 加载保存的参数，例如 当前系统的时间戳
                 self.mSerial[self.comboBoxList[0].currentIndex()].port_open()
                 self.mSerial[self.comboBoxList[0].currentIndex()].GUIUpdate.connect(self.update_plot_data)
                 self.mSerial[self.comboBoxList[0].currentIndex()].start()
@@ -690,14 +704,14 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
             pass
 
         elif self.my_sender == u"Mode switch":
-            # switch sample mode
+            # switch sample mode; 会直接以设定的mode开始sample
             if self.curr_active_ports in self.mSerial_disable:
                 try:
                     mode = int(self.lineEdit.text())
                 except:
                     mode = 4 # invalid mode
                 if(mode < 3):
-                    self.err = self.mSerial[self.curr_active_ports].send_data([0x02 ,0x00, int(hex(mode) ,16), 0x00])
+                    self.err = self.mSerial[self.curr_active_ports].send_data([0x00 ,0x03, int(hex(mode) ,16), 0x00])
             else:
                 QMessageBox.warning(self.MainWindow, "Warning", "Please opening the Serial port !")
             pass
@@ -714,7 +728,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         
         elif self.my_sender == u"sample switch off":
             if self.curr_active_ports in self.mSerial_disable:
-                self.close_command = [0x02 ,0x00, 0xff, 0x00] # invalid sample mode
+                self.close_command = [0x02 ,0x00] # invalid sample mode
                 self.err = self.mSerial[self.curr_active_ports].send_data(self.close_command)
             else:
                 QMessageBox.warning(self.MainWindow, "Warning", "Please opening the Serial port !")
@@ -761,7 +775,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
             pass
         
         elif self.my_sender == u"auto ST update":
-            if self.curr_active_ports in self.mSerial_disable:
+            if (self.curr_active_ports in self.mSerial_disable and self.current_sample_mode == 1):
                 self.Auto_ST_Update = True
                 self.channel_panding = 0
                 self.Auto_ST_Update_flag = 0

@@ -158,9 +158,10 @@ class SerialPort(QThread):
         self.test2 = 0
         self.tiema = 0
         """ GUI system """
-        
-        self.timestamp = 0 # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
-        self.GUIUpdateInterval = 20 # 单位为packets num , per 40 packets upadte the GUI graphs ;2000 packets one file
+        # alignment
+        self.alignment_timestamp = time.time() # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
+
+        self.GUIUpdateInterval = 10 # 单位为packets num , per 40 packets upadte the GUI graphs ;2000 packets one file
         self.UpdateCounter = 0
 
         # double buffer GUI 
@@ -222,13 +223,8 @@ class SerialPort(QThread):
         self.spike_losspackets_mode2 = 0
 
         # remove duplicate packets and sorting acoording to timestamp and packets_index
-        self.spike_maxlen_mode2 = 3
+        self.spike_maxlen_mode2 = 10
         self.spike_buffer_counter_mode2 = 0
-        self.spike_raw_packets_order = []
-        
-        # self.spike_data_buffer_mode2 = ''
-        self.spike_timestamp_buffer_mode2 = coll.deque(maxlen=1000)
-        
         
         """ spike detection """
         self.calcST = []
@@ -258,6 +254,7 @@ class SerialPort(QThread):
 
     def port_open(self):
         """ seiral ports opening """
+        #### read parameters
         if not self.port.isOpen():
             self.port.open()
     
@@ -269,6 +266,12 @@ class SerialPort(QThread):
         """ write commands to peripheral """
         n = self.port.write(data) # must is bytes
         return n
+    
+    def load_parameters(self):
+        with open('Reader_params.json', 'r') as file:
+            data = json.load(file)
+            self.alignment_timestamp = data["timestamp_ms"]
+        pass
 
     def read_data(self):
         """ read fifo of usbd """
@@ -296,8 +299,8 @@ class SerialPort(QThread):
                 self.USBFIFO.append(full_frame)
                 full_frame = bytearray()
                 self.data_process_full()
-
-
+                
+            
     def data_process_full(self):
         # GUI updater
         self.GUIUpate_enable()
@@ -314,6 +317,7 @@ class SerialPort(QThread):
             3. empty: when the sample is stopping
             """
             for _, packets in enumerate(spilt_temp):
+                # print(packets)
                 self.receive_num_packet += 1
                 # get the category of packets
                 try:
@@ -332,7 +336,8 @@ class SerialPort(QThread):
                     # self.UpdateCounter += 1
                     
                     # get timestamp + lfp channel length + overflow signal
-                    self.lfp_timestamp_buffer.append(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
+                    lfp_timestamp_temp = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
+                    self.lfp_timestamp_buffer.append(lfp_timestamp_temp + self.alignment_timestamp) # timestamp
                     _ = int(packets[0:2] ,16) # channel num of each packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
@@ -353,8 +358,8 @@ class SerialPort(QThread):
                     """  spike packets: mode 1 """
                 elif(packets_type == 2 and packet_length == 108): 
                     self.SPIKERawCounter += 1
-
-                    self.spike_timestamp_buffer.append(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
+                    spike_timestamp_mode1_temp = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
+                    self.spike_timestamp_buffer.append(spike_timestamp_mode1_temp) # timestamp
                     self.spike_channel_index_mode1 = int(packets[0:2] ,16) # channel index of current packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
@@ -374,7 +379,7 @@ class SerialPort(QThread):
                     """  spike packets: mode 2 """
                 elif(packets_type == 6 and packet_length == 13): # other sensor data: 1 packets every 6ms
                     self.SPIKEsensorCounter_mode2 += 1
-                    _ = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) # timestamp
+                    _ = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
 
@@ -386,7 +391,7 @@ class SerialPort(QThread):
                     """ 注意，这里需要做一下包的排序，包之间的间隔过短 会出现包顺序的错乱和重复: TODO"""
                     self.spike_buffer_counter_mode2 += 1
                     # timestamp
-                    temp_timestamp_mode2 = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    temp_timestamp_mode2 = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
                     # current index 
                     temp_packet_index = int(packets[0:2] ,16) # index of 3 packets list
                     # current signal
@@ -411,23 +416,43 @@ class SerialPort(QThread):
                         self.test2 += 1
                     self.test = temp_timestamp_mode2
 
-                    self.spike_timestamp_buffer_mode2.append(temp_timestamp_mode2)
                     self.spike_FIFO_mode2.append([temp_timestamp_mode2, temp_packet_index, self.spike_raw_channel, (packets[30:] + ' ')]) # timestamp + packet_index + channel_index + raw data
                     
                     # process data
                     self.spike_raw_packets_process_mode2()
                     pass
-                elif(packets_type == -1):
-                    # other packets
+
+                    """ for timestamp alignment """
+                elif(packets_type == 4): # empty payload
+                    pass
+                elif(packets_type == 3): # timestamp payload
+                    current_time = int(time.time() * 1000)
+                    timestamp_message = np.array(packets.split(' '))[0:-1] # 取前 5个 short
+
+                    timestamp_from_pri = ''
+                    for bt in timestamp_message[1:5]:
+                        timestamp_from_pri += (swap16Hex(bt))
+                    timestamp_from_pri = int(timestamp_from_pri ,16)
+                    # 基于函数的时间误差校正
+                    self.alignment_timestamp = current_time - self.timestamp_calibration(timestamp_from_pri) # 实际的系统开机时间
+                    
+                    print("system on:", self.alignment_timestamp)
+                    # save to file
+                    with open('Reader_params.json', 'r') as f:
+                        data = json.load(f)
+                    data["timestamp_ms"] = self.alignment_timestamp
+                    with open('Reader_params.json', 'w') as f:
+                        json.dump(data, f, indent=2)    # 保持2个缩进
                     pass
 
+          
     def spike_sensor_packets_process_mode2(self, sensor_data):
         # spilt
         temp_sensor_data = np.array(sensor_data.split(' '))[0:-1]
         # sensor data
         temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])))
         temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
-        # TODO LC data
+        # LC data
         temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
@@ -442,19 +467,39 @@ class SerialPort(QThread):
         pass
 
     def spike_raw_packets_process_mode2(self):
-        if(len(self.spike_timestamp_buffer_mode2) >= self.spike_maxlen_mode2):
+        if(len(self.spike_FIFO_mode2) >= self.spike_maxlen_mode2):
             self.SPIKERawCounter_mode2 += 1 # for file saving
-            # get pop times
-            temp_copy_timestamp = self.spike_timestamp_buffer_mode2.copy()
-            temp_timestamp_list = np.array(temp_copy_timestamp)[0:self.spike_maxlen_mode2]  # print(temp_timestamp_list, np.array(temp_copy_timestamp)[0:self.spike_maxlen_mode2])
-            temp_teimstamp = np.unique(np.array(temp_timestamp_list))[0] # print(temp_teimstamp)
-            temp_pop_times = np.sum(np.array(temp_timestamp_list)==temp_teimstamp)
 
-            for _ in range(temp_pop_times): 
-                temp_mode2 = self.spike_FIFO_mode2.popleft()
-                _ = self.spike_timestamp_buffer_mode2.popleft()
-                # packet index
-                temp_packet_index = temp_mode2[1] # 0~2
+            index_temp = list(np.arange(0, self.spike_maxlen_mode2, 1))
+            timestamp_temp = [] # 10
+            packetIndex_temp = []
+            FIFO_list_temp = []  # 看前10个包的数据
+            # get pop times
+            for i in range(self.spike_maxlen_mode2): 
+                FIFO_temp = self.spike_FIFO_mode2.popleft()
+                FIFO_list_temp.append(FIFO_temp)
+                timestamp_temp.append(FIFO_temp[0])
+                packetIndex_temp.append(FIFO_temp[1])
+
+            ## sort acording to timestamp and packet index
+            index_temp = sorted(index_temp, key=lambda x: (timestamp_temp[x], packetIndex_temp[x]))
+            timestamp_temp = np.array(timestamp_temp)[index_temp]
+            packetIndex_temp = np.array(packetIndex_temp)[index_temp]
+            FIFO_list_temp = np.array(FIFO_list_temp, dtype=object)[index_temp]
+            # remove duplicate value
+            _, non_duplicate_index =np.unique(np.array([timestamp_temp, packetIndex_temp]),return_index=True, axis=1)
+            FIFO_list_temp = FIFO_list_temp[non_duplicate_index]
+            timestamp_temp = timestamp_temp[non_duplicate_index]
+            packetIndex_temp = packetIndex_temp[non_duplicate_index]
+
+            current_timestamp = np.unique(timestamp_temp)[0]
+            temp_pop_times = np.sum(timestamp_temp == current_timestamp)
+
+            for i in range(temp_pop_times): 
+                temp_mode2 = FIFO_list_temp[i]
+                # packet index and timestamp
+                temp_i_timestamp = temp_mode2[0]
+                temp_i_packetIndex = temp_mode2[1] # 0~2
                 # spilt raw data
                 temp_raw_mode2 = np.array(temp_mode2[3].split(' '))[0:-1]
                 emp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_raw_mode2))
@@ -463,11 +508,15 @@ class SerialPort(QThread):
                     self.spikedata_mode2_GUI[channel_num].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
             
             # give to GUI buffer for timestamp
-            self.spiketimestamp_mode2_GUI.append(temp_teimstamp) # timestamp
+            self.spiketimestamp_mode2_GUI.append(current_timestamp) # timestamp
+
+            # append back to fifo
+            for i in range(len(non_duplicate_index) - temp_pop_times):
+                self.spike_FIFO_mode2.appendleft(FIFO_list_temp[len(non_duplicate_index) - i - 1])
 
             if(temp_pop_times != 3):
+                # print(temp_pop_times, timestamp_temp, packetIndex_temp)
                 self.spike_losspackets_mode2 += (3 - temp_pop_times)
-            # print(temp_timestamp_list, temp_pop_times, temp_teimstamp)
             # 3. save to file TODO
         pass
 
@@ -494,7 +543,7 @@ class SerialPort(QThread):
         # sensor data
         temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])))
         temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
-        # TODO LC data
+        # LC data
         temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
         
         for i in range(9):
@@ -529,7 +578,7 @@ class SerialPort(QThread):
         # sensor data
         temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])), dtype=np.float32)
         temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])), dtype=np.float32)
-        # TODO LC data
+        # LC data
         temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])), dtype=np.float32)
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
@@ -612,7 +661,7 @@ class SerialPort(QThread):
             self.spikedata_GUI = []
             self.spikerasterdata_GUI = [[] for _ in range(16)]
             self.sensordata_GUI = [[] for _ in range(9)]
-        elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval // 2):
+        elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval): 
             self.GUIUpdate.emit([[2], self.spiketimestamp_mode2_GUI, self.spikedata_mode2_GUI, self.sensordata_GUI]) # mode 2
             self.spiketimestamp_mode2_GUI = []
             self.sensordata_GUI= [[] for _ in range(9)]
@@ -657,6 +706,10 @@ class SerialPort(QThread):
         else:
             return (float(int(x ,16) * self.DAC_resolution) - 1.225) / 192 * 1000 * 1000  # uV 放大 192 倍 use unsigned offset 
 
+    def timestamp_calibration(self, x, error_per_ms=30000):
+        """ input: system on /ms :positive: delayed error; negative: advanced error """
+        return (x + x // error_per_ms) # 每30秒,慢1ms
+       
 
     def flush(self):
         self.port.flushInput()

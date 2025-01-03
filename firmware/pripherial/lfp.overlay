@@ -47,22 +47,22 @@
 		};
 	};
 
-	i2c0_default: i2c0_default {
-		group1 {
-			psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
-				<NRF_PSEL(TWIM_SCL, 0, 25)>;
-				// nordic,drive-mode = <NRF_DRIVE_S0D1>;
-				// bias-pull-up; // internal pull-up is too weak, only for 100kHz or lower  
-		};
-	};
+	// i2c0_default: i2c0_default {
+	// 	group1 {
+	// 		psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
+	// 			<NRF_PSEL(TWIM_SCL, 0, 25)>;
+	// 			// nordic,drive-mode = <NRF_DRIVE_S0D1>;
+	// 			// bias-pull-up; // internal pull-up is too weak, only for 100kHz or lower  
+	// 	};
+	// };
 
-	i2c0_sleep: i2c0_sleep {
-		group1 {
-			psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
-				<NRF_PSEL(TWIM_SCL, 0, 25)>;
-			low-power-enable;
-		};
-	};
+	// i2c0_sleep: i2c0_sleep {
+	// 	group1 {
+	// 		psels = <NRF_PSEL(TWIM_SDA, 0, 22)>,
+	// 			<NRF_PSEL(TWIM_SCL, 0, 25)>;
+	// 		low-power-enable;
+	// 	};
+	// };
 
 	spi1_default: spi1_default {
 		group1 {
@@ -113,15 +113,22 @@
 };
 
 
-&i2c0 {
-	compatible = "nordic,nrf-twim"; // twi; twim; twis
-	/* Cannot be used together with spi0. */
-	status = "okay";
-	clock-frequency = <I2C_BITRATE_STANDARD>;
-	pinctrl-0 = <&i2c0_default>;
-	pinctrl-1 = <&i2c0_sleep>;
-	pinctrl-names = "default", "sleep";
-};
+// &i2c0 {
+// 	compatible = "nordic,nrf-twim"; // twi; twim; twis
+// 	/* Cannot be used together with spi0. */
+// 	status = "okay";
+// 	clock-frequency = <I2C_BITRATE_STANDARD>;
+// 	pinctrl-0 = <&i2c0_default>;
+// 	pinctrl-1 = <&i2c0_sleep>;
+// 	pinctrl-names = "default", "sleep";
+	
+// 	// LC: LC@0B{
+// 	// 	compatible = "i2c-device";
+// 	// 	reg = < 0x0B >;
+// 	// 	label = "LC";
+// 	// };
+	
+// };
 
 &spi1 {
 	compatible = "nordic,nrf-spim";
@@ -141,4 +148,8 @@ zephyr_udc0: &usbd {
 // };
 &wdt {
 	status = "disabled";
+};
+
+&rtc0 {
+	status="okay";
 };

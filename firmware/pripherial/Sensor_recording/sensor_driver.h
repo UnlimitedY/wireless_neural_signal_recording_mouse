@@ -14,6 +14,7 @@
 /* spi for lsm */
 /*Pin Definitions*/
 
+#define I2C0_NODE DT_NODELABEL(i2c0)
 #define LC_SDA_PIN             22
 #define LC_SCL_PIN             25
 
@@ -31,30 +32,29 @@
 #define LSM_INSTANCE_ID     1 // using the twi 1
 
 /* TWI instance. */ // lsm 可以工作在400k和100k模式下；但需要外部上拉电阻
-extern const struct device *lc_twim; 
+extern const nrfx_twim_t lc_twim;
 extern uint8_t twimWriteDataBuffer[TWI_MAX_NUM_TX_BYTES];
+extern uint8_t LCDataBuffer[6];
 /* SPI instance. */
 extern const nrfx_spim_t lsm_spi; /**< SPI instance. */
 
 /*************************************functions******************************************/
 nrfx_err_t twim_init (void); // not use when using device tree configration
 
-// void lsm_twim_handler(nrfx_twim_evt_t const * p_event, void * p_context);
+uint8_t cal_crc_table(uint8_t *data, uint8_t len);
+
+uint8_t cal_bytes_crc8(uint8_t *data, uint8_t len);
 
 void lc_twim_handler(nrfx_twim_evt_t const * p_event, void * p_context);
 
-void mergeRegisterAndData(uint8_t *pTxBuf, uint8_t regAddr, uint8_t *pData, uint8_t dataLen);
+bool LC_twi_data_write(uint8_t slaveAddr, uint8_t regAddr, uint16_t pData);
 
-// void twim_enable(void);
-
-// void twim_disable(void);
-
-nrfx_err_t twi_data_write(uint8_t slaveAddr, uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device);
-
-nrfx_err_t twi_data_read(uint8_t slaveAddr, uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device);
+nrfx_err_t LC_twi_data_read(uint8_t slaveAddr, uint8_t regAddr, uint16_t *pData);
 
 // spi: lsm
 nrfx_err_t lsm_spim_init(void);
+
+void mergeRegisterAndData(uint8_t *pTxBuf, uint8_t regAddr, uint8_t *pData, uint8_t dataLen);
 
 nrfx_err_t data_write(uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device);
 

@@ -5,7 +5,12 @@ import  os
 #search.py
 import os
 import sys
+import collections as coll
 
+FIFO_list_temp = np.arange(0, 1000)
+timestamp_temp = np.arange(0, 1000) * -1
+FIFO_list_temp = sorted(FIFO_list_temp, key=lambda x: (timestamp_temp[x]))
+print(list(FIFO_list_temp).index(0))
 
 # filr = "test_RawData_0_2024-12-02-16-38-54.npy"
 # data = np.load(filr, allow_pickle=True)
@@ -24,19 +29,19 @@ import sys
                 # self.LFP_raw_data[i][tempinde_negative] = -self.saturation_value + i * self.separate_interval
 
 # print(len([[1,2] ,[2]]))
-def DAC(x ,raw=True, two_complement=False): 
-    if raw:
-        if(two_complement):
-            if (int(x, 16) < int('8000', 16)):
-                return int(x, 16)
-            else:
-                a = int(x, 16) 
-                return a - 2**(len(x) * 4)
-        else:
-            return int(x ,16) # n
+# def DAC(x ,raw=True, two_complement=False): 
+#     if raw:
+#         if(two_complement):
+#             if (int(x, 16) < int('8000', 16)):
+#                 return int(x, 16)
+#             else:
+#                 a = int(x, 16) 
+#                 return a - 2**(len(x) * 4)
+#         else:
+#             return int(x ,16) # n
 
 
-print(DAC("ffff", raw=True, two_complement=True))
+# print(DAC("ffff", raw=True, two_complement=True))
 # print(temp_timestamp_mode2, temp_packet_index, packets[-10:])
                     # if((temp_timestamp_mode2 - self.test > 6) or (temp_timestamp_mode2 - self.test < 0) ):
                     #     print(temp_timestamp_mode2 - self.test)

@@ -126,9 +126,6 @@ void command_process(uint8_t length, uint16_t *data)
         if (sample_switch)
         {
             sample_switch = false;
-            if((u8_t)data[1] < 3){
-                sampe_mode = data[1]; // change sample mode
-            }
         }
     }
         break;
@@ -139,6 +136,8 @@ void command_process(uint8_t length, uint16_t *data)
         // TODO
     }
         break;
+
+
     case 0x0200: // LFP channels switch
     {
         recorded_channel_num = 0;
@@ -152,11 +151,13 @@ void command_process(uint8_t length, uint16_t *data)
         // TODO
     }
         break;
-    case 0x0300: // behavioral event-triggered tasks: GUI & HABITS
+    case 0x0300: // behavioral event-triggered tasks (change mode): GUI & HABITS
     {
-       mode_switch_flag = true;
-       sample_switch = false;
-       sampe_mode = data[1];
+        mode_switch_flag = true;
+        sample_switch = false;
+        if((u8_t)data[1] < 3){
+            sampe_mode = data[1];
+        }
     }
         break;
     case 0x0400: // spike mode 1: raw channel selection
@@ -205,6 +206,7 @@ void event_handler(struct esb_evt const *event)
 int timestamp_payload_wrap(void){
     timestamp_payload.noack = 0;
     stamp_check = k_uptime_get();
+    // stamp_check = (uint64_t)k_cyc_to_ms_near32(k_cycle_get_32());
     for (int i = 0; i < 4; i++)
     {
         timestamp_payload.data[4 - i] = (stamp_check >> (i * 16)) & 0xFFFF;
@@ -227,8 +229,8 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
     // 1. pre-head of packet 0xXXYY---XX is type; YY is the number of recorded channels
     tx_payload.data[0] = 0x0100 | recorded_channel_num; 
     // 2. package signal including: real-time timestamp; overflow_signal
-    tx_payload.data[2] = (u16_t)packet_timestamp; 
-    tx_payload.data[1] = (u16_t)(packet_timestamp >> 16);
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
     tx_payload.data[3] = ((u16_t)sensor_update_flag << 8) | (u16_t)overflow_signal; 
     txbufIndex += 4;
 
@@ -265,8 +267,8 @@ int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16
     // 1. pre-head of packet 0xXXYY---XX is type; YY is the index of recorded channels
     tx_payload.data[0] = 0x0200 | packet_index; 
     // 2. package signal including: real-time timestamp; overflow_signal
-    tx_payload.data[2] = (u16_t)packet_timestamp; 
-    tx_payload.data[1] = (u16_t)(packet_timestamp >> 16);
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
     tx_payload.data[3] = ((u16_t)sensor_update_flag << 8) | (u16_t)overflow_signal; 
     txbufIndex += 4;
 
@@ -310,8 +312,8 @@ int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u
     // 1. pre-head of packet 0xXXYY---XX is type; YY is the index of recorded channels
     tx_payload.data[0] = 0x0500 | counter;  
     // 2. package signal including: real-time timestamp; overflow_signal
-    tx_payload.data[2] = (u16_t)packet_timestamp; 
-    tx_payload.data[1] = (u16_t)(packet_timestamp >> 16);
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
     tx_payload.data[3] = (u16_t)overflow_signal; 
     txbufIndex += 4;
 
@@ -338,8 +340,8 @@ int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data){
     // 1. pre-head of packet 0xXXYY---XX is type; YY is the index of recorded channels
     tx_payload.data[0] = 0x0600; 
     // 2. package signal including: real-time timestamp; overflow_signal
-    tx_payload.data[2] = (u16_t)packet_timestamp; 
-    tx_payload.data[1] = (u16_t)(packet_timestamp >> 16);
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
     tx_payload.data[3] = ((u16_t)sensor_update_flag << 8) | (u16_t)overflow_signal; 
     txbufIndex += 4;
 

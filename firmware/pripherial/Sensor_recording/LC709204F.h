@@ -64,8 +64,7 @@
 
 #define LC709204F_ADDRESS                 0x0B   // I2C device address
 
-//   LC709204F(I2Cdev* i2c_bus);
-void getChipID(uint16_t *databuf);
+int getChipID(void);
 void LC_init();
 void LC_getCellVoltage(uint16_t *databuf);
 void LC_getRSOC(uint16_t *databuf);

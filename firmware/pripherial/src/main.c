@@ -14,7 +14,9 @@
 // for debugging
 #include <zephyr/logging/log.h>
 #include <string.h>
-
+// // for RTC timestamp
+// #include <zephyr/drivers/counter.h>
+// #include <zephyr/drivers/rtc.h>
 
 #define LOG_MODULE_NAME LFP_Recording_peripherial
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
@@ -101,12 +103,8 @@ uint8_t gpiote_channel;
 u32_t tx_payload_wraped_num = 0; // count the number of wrapped tx packages
 /***********************for debugging and cue************************/ 
 #define LED0_NODE DT_ALIAS(led0) // macro function of devicetree; test led
-// #define LED1_NODE DT_ALIAS(led1) // macro function of devicetree; lsm SDO/SAO 
-// #define LED2_NODE DT_ALIAS(led2) // macro function of devicetree; lsm cs
 
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
-// static const struct gpio_dt_spec lsmSDO = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
-// static const struct gpio_dt_spec lsmcs = GPIO_DT_SPEC_GET(LED2_NODE, gpios);
 
 void LED_hinting(uint32_t interval, uint32_t eventNum){
         // interval: 2000; 1000; 500; 200 
@@ -135,6 +133,10 @@ bool sample_switch = false; // 初始化程序的时候默认直接进入到暂�
 
 // esb package head & control flags
 u32_t packet_timestamp = 0; 
+uint32_t timestamp_HABITS = 0;
+uint32_t timestamp_baseline = 0;
+uint32_t timestamp_LTNSRS = 0;
+
 u32_t packet_sent_counter[2] = {0, 0};
 
 bool overflow_signal = 0;
@@ -158,9 +160,11 @@ u8_t channel_16_order[CONVERT_FASHION_NUM] = {17, 18, 0, 1, 2, 3, 4, 5, 6, 7, 8,
 
 /********************************sensor setup**********************************/
 // const struct device *lc_twim = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+const nrfx_twim_t lc_twim = NRFX_TWIM_INSTANCE(LC_INSTANCE_ID);
 const nrfx_spim_t lsm_spi = NRFX_SPIM_INSTANCE(LSM_INSTANCE_ID);
 
 uint8_t twimWriteDataBuffer[TWI_MAX_NUM_TX_BYTES];
+uint8_t LCDataBuffer[6];
 
 /************************** ESB defination **************************************/
 // uint16_t data[CONFIG_ESB_MAX_PAYLOAD_LENGTH/2]; /**< The payload data. */
@@ -175,7 +179,7 @@ struct esb_payload timestamp_payload; // neural signal alignment required
 * 通过IMU来读取一定sample rate的3轴数据，在单次包的发送中，将该数据放入并一起发送到上位机；
 */
 int16_t imu_data[6];
-int16_t lc_data[3];// TODO not used
+int16_t lc_data[3];
 
 struct IMU_settings settings;
 
@@ -183,7 +187,7 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 	int err;
         // init lsm spim
         err= lsm_spim_init();
-        k_sleep(K_MSEC(20));
+        k_sleep(K_MSEC(500));
         LOG_INF("lsmspi init %d \n" ,err);
 	// 初始化 LSM
 	err = LSM6DS3_who_am_i();
@@ -209,7 +213,20 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
                 };
         }
 
-
+        /******* for LC *******/
+        twim_init(); 
+        k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
+        // 初始化 LC battery
+	int LCID; // APT
+	LCID = getChipID();
+	while(LCID != 0x001e){
+                LED_hinting(500, 2);
+                LOG_INF("LC battery init failed %x \n" ,LCID);
+                LCID = getChipID();
+                k_sleep(K_SECONDS(1));  
+	}
+	//test 100mAH capacity ;
+	LC_init();
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
@@ -220,6 +237,15 @@ void LSM6DS3_Read(void){ // only recording 3-axis
 	LSM6DS3_read_gyro_data();
 }
 
+void BatteryPower_Temp_Read(u16_t *data){
+	// RSOC
+	LC_getRSOC(data); // 0-100%
+	// battery status
+	LC_getStatus(data + 1);
+	// LC_clearStatus();
+	// temp of battery
+	LC_getTemperature(data + 2); // * 0.1k
+}
 
 /************************** main-used function **************************************/
 u16_t init_everything(void){
@@ -530,7 +556,7 @@ int main(void)
 
         /**************** main thread ******************/
         mainThread = k_sched_current_thread_query();
-        u32_t packets_counter = k_uptime_get_32(); // 4096 ticks per sec 
+        u32_t packets_counter = k_uptime_get_32(); // 8192 ticks per sec 
 
         /*
         ******************************************* setup ***********************************
@@ -556,16 +582,16 @@ int main(void)
                 if(!sample_switch){
                         /* stop sampling */
                         if(sampling){
-                             timer_stop(sampe_mode);   
+                             timer_stop();   
                              sampling = false;
                         }
                         /* sample mode switch */
                         if(mode_switch_flag){
-                                mode_switch_flag = false;
+                                sample_switch = true;
                                 continue;
                         }
 
-                       /* empty esb packets */
+                        /* empty esb packets */
                         err = empty_payload_wrap();
                         if(err){
                                 esb_flush_tx();
@@ -573,11 +599,6 @@ int main(void)
                         }
                         LED_hinting(200, 2);
                         k_sleep(K_SECONDS(1));
-                        
-                        /*****for test*****/
-                        if(tx_payload_wraped_num == 0){
-                                sample_switch = true;
-                        }
 
                 }else if(!sampling){
                         /* re-configration rhd with specific sample mode */
@@ -588,20 +609,46 @@ int main(void)
                         nrfx_gpiote_out_set(&gpiote_instance, NRFX_SPIM_SS_PIN); // reset the CS line to disable
                         
                         /* begining sample */
-                        // LED_hinting(100, 10);
                         gpio_pin_set_dt(&led, 1); // clear the led
                         buffer_is_full = false;
                         sampling = true;
                         overflow_signal = !overflow_signal;
                         RHD_tx_buf_setup();
-
-                        err = timestamp_payload_wrap();
-                        if(err){
+                        
+                        // for timestamp alignment
+                        if(!mode_switch_flag){ // normal 
+                                // 保证 在下位机到中继端的时间延迟最小
+                               
+                                LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
+                                while(!esb_is_idle()){};
                                 esb_flush_tx();
-                                LOG_INF("%d esb timestamp payload failed", err);
-                        }
-                        timer_start(sampe_mode);
+                                // TODO 注意： nrf 本身的时钟存在误差：大约在每半分钟，慢1ms，可能通过拟合函数来校正，或者其他的时间对齐方案
+                                // set retransimit count to 0 保证时间延迟的稳定性 
+                                // TODO 时间延迟有多少还需要通过有线的方式来测试：理论上：ramp up：140us；其余处理 几百us，延时可能在1ms以内
+                                // 也可以通过 数据特征和事件来做定义
+                                esb_set_retransmit_count(0);
 
+                                timerecording = packet_sent_counter[0];
+                                err = timestamp_payload_wrap();
+                                while(!esb_is_idle()){};
+
+                                // check if the command has sent success
+                                while((esb_pop_tx() != -ENODATA) || (packet_sent_counter[0] - timerecording == 0)){
+                                        // failed 
+                                        esb_flush_tx();
+                                        timerecording = packet_sent_counter[0];
+                                        err = timestamp_payload_wrap();
+                                        while(!esb_is_idle()){};
+                                }
+                                LED_hinting(100, 5);
+                                esb_set_retransmit_count(1);
+
+                        }else{ // fast mode switch
+                                mode_switch_flag = false;
+                        }
+                        
+                        // start sampling
+                        timer_start();
                         k_sleep(K_FOREVER);
                 }
 
@@ -621,13 +668,14 @@ int main(void)
                         tx_payload_wraped_num++;
                         // the timestamp is absolutely value from power up for each packages
                         packet_timestamp = k_uptime_get_32(); // ms CONFIG_SYS_CLOCK_TICKS_PER_SEC depend the time resolution
-
+                        timestamp_LTNSRS = packet_timestamp;
                 /*** 0.1. imu lc data read ***/
                         // 注意： memset 效率不高这个memset 函数
                         if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
                                 LSM6DS3_Read(); // 500us 6-axis blocking mode
+                                BatteryPower_Temp_Read(lc_data);
                         }
 
                 /*** 1. structured copy rx_buf data ***/
@@ -676,7 +724,7 @@ int main(void)
                                                 }
                                         }
                                         err = spike_multi_tx_payload_wrap(temp_spike_channel_array, sizeof(temp_spike_channel_array)/2, spike_raw_channel, (u8_t)packets_nu);
-                                        k_sleep(K_USEC(500)); // 用来保证 数据传输接受会按照先后顺序
+                                        k_sleep(K_USEC(435)); // 用来保证 数据传输接受会按照先后顺序
                                 }
                         }
                         

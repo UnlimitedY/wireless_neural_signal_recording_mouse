@@ -23,7 +23,6 @@ extern bool sample_switch;
 extern bool mode_switch_flag;
 extern u16_t sampe_mode;
 
-extern u32_t packet_timestamp; // define the unique packet index: timestamp
 extern u32_t packet_sent_counter[2]; // count the sent package number: [0] is success; [1] is fail
 extern u8_t HABITS_events; // define the events of HABITS
 
@@ -51,6 +50,22 @@ extern struct esb_payload tx_payload; // neural signal -- tx
 
 extern struct esb_payload empty_payload; // when sampling disable 
 extern struct esb_payload timestamp_payload; // neural signal alignment required
+
+
+/****************************************alignment with HABITS****************************************/
+/*
+* 软件对齐系统 （基于ESB）: 相当于每一次重启都是一个新的trial：每次重新开始sample的时候，做一次对齐；发送一个下位机这一次重启经历的时间，上位机将这个时间
+* 在数据收集过程中，无法对齐实际时间和收到包的时间由于数据发送的延时和丢包问题，需要每次重启的时候，做一次单独的时间对齐到重启的实际时间
+* 当GUI 重启的时候，会丢失这个对齐的值，需要保存一个文件来单独记录这个对齐的值
+* HABITS 使用实际物理时间，同时LTNSRS 也使用实际物理时间 来对齐
+* 注意：必须每次重启后都需要通过上位机来打开sample，才能实现时间的对齐而不出现bug
+*/
+extern u32_t packet_timestamp; // define the unique packet index: timestamp
+extern uint32_t timestamp_LTNSRS; // packed timestamp from LTNSRS (long-term neural signal recording system)
+
+// not use
+extern uint32_t timestamp_HABITS; // received timestamp from HABITS
+extern uint32_t timestamp_baseline; // baseline timestamp updated by alignment events
 
 /*****************************ESB function***************************************/
 // esb init
