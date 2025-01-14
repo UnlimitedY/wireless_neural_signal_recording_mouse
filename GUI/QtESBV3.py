@@ -388,7 +388,10 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 """ LFP raw data update """
                 # # update infinited line
                 self.updating_indicater.setPos(self.ring_lfp_pointer) # span (0, 1)
-                self.updating_indicater.label.setFormat('loss_packets:{}/{}'.format(self.lfpmisspackets, self.lfpaccumulpackets))
+                self.updating_indicater.label.setFormat('loss:{}/{} | rssi:{}/{} in {}'.format(self.lfpmisspackets, self.lfpaccumulpackets, 
+                                                                                               self.mSerial[self.curr_active_ports].rssi,
+                                                                                                self.mSerial[self.curr_active_ports].rf_channel_rssi,
+                                                                                                self.mSerial[self.curr_active_ports].rf_channel))
                 for i in range(16): # diff color diff channels separate_interval
                     # update data
                     """ upper and lower band """

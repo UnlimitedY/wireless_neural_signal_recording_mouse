@@ -80,6 +80,11 @@ u16_t rx_temp_payload[130];
 static int send_len = 0; // recording the number of data usb sent
 static int counter_loop = 0; // recording the number of packages
 
+int rf_channel = 0;
+bool channel_switch = false;
+k_tid_t mainThread;
+
+int retssss;
 /**************************************** usb cdc function********************************************************/
 const struct device *dev;
 
@@ -131,11 +136,17 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 
 				// timestamp alignment
 				if(rx_payload.data[0] == 0x0300){
-					rx_payload.data[rx_payload.length/2] = 0x2221;
-					rx_payload.data[rx_payload.length/2 + 1] = 0x2423;
-					rx_payload.data[rx_payload.length/2 + 2] = 0x2625;
-					rx_payload.data[rx_payload.length/2 + 3] = 0x2827;
-					send_len = uart_fifo_fill(dev, rx_payload.data, rx_payload.length + 8);
+					rx_payload.data[rx_payload.length/2] = rx_payload.rssi;
+					rx_payload.data[rx_payload.length/2 + 1] = 0x2221;
+					rx_payload.data[rx_payload.length/2 + 2] = 0x2423;
+					rx_payload.data[rx_payload.length/2 + 3] = 0x2625;
+					rx_payload.data[rx_payload.length/2 + 4] = 0x2827;
+					send_len = uart_fifo_fill(dev, rx_payload.data, rx_payload.length + 10);
+
+					// set channel
+					rf_channel = (u8_t)rx_payload.data[5];
+					channel_switch=true;
+					k_wakeup(mainThread);
 					continue;
 				}
 
@@ -145,10 +156,12 @@ void event_handler(struct esb_evt const *event) // deal the receive event and ad
 
 				memcpy(rx_temp_payload, rx_payload.data, rx_payload.length);
 				// define the code to seqarate the individual packages
-				rx_temp_payload[rx_payload.length/2] = 0x2221;
-				rx_temp_payload[rx_payload.length/2 + 1] = 0x2423;
+				// rssi 
+				rx_temp_payload[rx_payload.length/2] = rx_payload.rssi;
+				rx_temp_payload[rx_payload.length/2 + 1] = 0x2221;
+				rx_temp_payload[rx_payload.length/2 + 2] = 0x2423;
 			
-				esb_packets_length = rx_payload.length + 4;
+				esb_packets_length = rx_payload.length + 6;
 				// get the free size of ring buff
 				free_size_ringbuff = ring_buf_space_get(&ringbuf); // in bytes
 				if(free_size_ringbuff < esb_packets_length){
@@ -198,6 +211,7 @@ int clocks_start(void)
 	struct onoff_manager *clk_mgr;
 	struct onoff_client clk_cli;
 
+
 	clk_mgr = z_nrf_clock_control_get_onoff(CLOCK_CONTROL_NRF_SUBSYS_HF);
 	if (!clk_mgr)
 	{
@@ -240,7 +254,7 @@ int esb_initialize(void)
 	struct esb_config config = ESB_DEFAULT_CONFIG;
 
 	config.protocol = ESB_PROTOCOL_ESB_DPL;
-	config.bitrate = ESB_BITRATE_2MBPS;
+	config.bitrate = ESB_BITRATE_2MBPS; 
 	config.mode = ESB_MODE_PRX;
 	config.event_handler = event_handler;
 	config.selective_auto_ack = true; // 需要两边的该参数都需要为true 才能使能noack参数
@@ -269,8 +283,9 @@ int esb_initialize(void)
 	{
 		return err;
 	}
-	esb_set_tx_power(ESB_TX_POWER_3DBM);
+	esb_set_tx_power(ESB_TX_POWER_4DBM);
 
+	esb_set_rf_channel(84);
 	return 0;
 }
 
@@ -279,6 +294,7 @@ int esb_initialize(void)
 int main(void)
 {
 	int err;
+	mainThread = k_sched_current_thread_query();
 	/*************LED setup***************/
 	if (!gpio_is_ready_dt(&led)) {
                 LOG_INF("failed");
@@ -341,8 +357,18 @@ int main(void)
 	uart_irq_callback_set(dev, interrupt_handler);
 	// enable the rx irq to recieve the command
 	uart_irq_rx_enable(dev);
+
+
 	// main loop
 	while (true){
+
+		if(channel_switch){
+			channel_switch = false;
+			ret = esb_stop_rx();
+			ret = esb_set_rf_channel(rf_channel);
+			ret = esb_start_rx();
+		}
+
 		k_sleep(K_FOREVER);
 	} // main loop 
 

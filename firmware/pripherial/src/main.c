@@ -137,7 +137,7 @@ uint32_t timestamp_HABITS = 0;
 uint32_t timestamp_baseline = 0;
 uint32_t timestamp_LTNSRS = 0;
 
-u32_t packet_sent_counter[2] = {0, 0};
+uint32_t packet_sent_counter[2] = {0, 0}; // success ; fail ; flag
 
 bool overflow_signal = 0;
 bool sensor_update_flag = 0;
@@ -167,6 +167,12 @@ uint8_t twimWriteDataBuffer[TWI_MAX_NUM_TX_BYTES];
 uint8_t LCDataBuffer[6];
 
 /************************** ESB defination **************************************/
+uint8_t bitrate = 1; // 1 : 1mbps; 2: 2mbps
+uint8_t rf_channel = 5; // index of rf_ channel
+uint8_t advise_channel = 0;
+uint8_t rf_channel_list[rf_channel_num] = {2, 17, 33, 50, 67, 84}; // aviod conflict with WiFi
+uint8_t rf_channel_rssi_list[rf_channel_num] = {0};
+
 // uint16_t data[CONFIG_ESB_MAX_PAYLOAD_LENGTH/2]; /**< The payload data. */
 struct esb_payload rx_payload; // command & behavioral events --rx
 struct esb_payload tx_payload; // neural signal -- tx
@@ -174,6 +180,8 @@ struct esb_payload tx_payload; // neural signal -- tx
 struct esb_payload empty_payload; // when sampling disable 
 struct esb_payload timestamp_payload; // neural signal alignment required
 
+u32_t last_statistic_timestamp;
+uint8_t sample_watch_dog = 0;
 /***********************************TWI Setup function******************************************/
 /*
 * 通过IMU来读取一定sample rate的3轴数据，在单次包的发送中，将该数据放入并一起发送到上位机；
@@ -225,7 +233,7 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
                 LCID = getChipID();
                 k_sleep(K_SECONDS(1));  
 	}
-	//test 100mAH capacity ;
+	//test 50mAH capacity ;
 	LC_init();
 }
 
@@ -288,9 +296,12 @@ u16_t init_everything(void){
 
         empty_payload.length = 10;
         timestamp_payload.length = 12;
+
         tx_payload.pipe = 0; // using the pipe 0
         empty_payload.pipe = 0;
         timestamp_payload.pipe = 0;
+
+
 
         esb_flush_tx(); 
 	esb_flush_rx();
@@ -299,10 +310,13 @@ u16_t init_everything(void){
 
 u16_t init_RHD(){
         rhdspi_init();
-
         if(sampe_mode == 0){
-                // lfp 2khz : 3458us -> 3.5 ms one packet
-                timer_period = 26; 
+                // lfp 1khz : 3458us -> 7 ms one packet
+                /*
+                * 注意： 使用lfp 2khz 需要保证数据的发送经可能 快，以免休眠时间不够 （在3.1ms下，最多只能发送一个包，少量重发）
+                优先使用1khz 采样 (在7ms 内，发送3个包以内可以保证15mw功率)
+                */
+                timer_period = 52; 
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
         }else if(sampe_mode == 1){
@@ -310,7 +324,7 @@ u16_t init_RHD(){
                 timer_period = 3; // 5: 10,526 Hz ; 6: 8772 Hz ;  3: 17,544 Hz; 4: 13,158 Hz
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike);
-        }else if(sampe_mode == 2){
+        }else if(sampe_mode == 2){ 
                 // spike 17khz : 5985 us -> ~6 ms one packet
                 timer_period = 3; 
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
@@ -535,6 +549,52 @@ void running_time_onset(void){
         timerecording = k_cyc_to_us_floor32(k_cycle_get_32());
 }
 
+int dynamic_retransmit(void){
+        /* 
+        * 动态改变重发次数：(根据发送 （失败)/(失败 + 成功) 的比率)
+        * 1. 0% - 50%：2
+        * 2. 50% -100%： 3
+        * Special case: 100% : 0; lasting n : 暂停 sample
+        */ 
+       // 确认是否处于esb idle 状态
+        if(!esb_is_idle()){
+                return -1;
+        }
+
+        if(packet_timestamp - last_statistic_timestamp > 300){ // about 50 packets
+                if((packet_sent_counter[0] + packet_sent_counter[1] == 0)){
+                        last_statistic_timestamp = packet_timestamp;
+                        return -2;
+                }
+
+                // 获得 发送接收指标： 发送失败率
+                u32_t indicate_commu = (packet_sent_counter[1] * 100) / ((packet_sent_counter[1] + packet_sent_counter[0])); // 百分位
+                // change retransmit count
+                if(indicate_commu < 20){
+                        sample_watch_dog = 0;
+                        esb_set_retransmit_count(2);
+                }else if (indicate_commu < 100){
+                        sample_watch_dog = 0;
+                        esb_set_retransmit_count(0);
+                }else if(indicate_commu == 100){
+                        sample_watch_dog++;
+                        esb_set_retransmit_count(0);
+                }
+                
+                // 确定是否 需要暂停
+                if(sample_watch_dog > 10){ // 3s
+                        sample_switch = false;
+                        sample_watch_dog = 0;
+                }      
+
+                // 每过 500ms 重新统计 信号记录指标
+                last_statistic_timestamp = packet_timestamp;
+                packet_sent_counter[0] = 0;
+                packet_sent_counter[1] = 0;
+        
+        }
+        return 0;
+}
 
 /****************************main**************************************/
 int main(void)
@@ -557,6 +617,7 @@ int main(void)
         /**************** main thread ******************/
         mainThread = k_sched_current_thread_query();
         u32_t packets_counter = k_uptime_get_32(); // 8192 ticks per sec 
+        last_statistic_timestamp = packets_counter;
 
         /*
         ******************************************* setup ***********************************
@@ -598,7 +659,12 @@ int main(void)
                                 LOG_INF("%d esb empty payload failed", err);
                         }
                         LED_hinting(200, 2);
-                        k_sleep(K_SECONDS(1));
+                        k_sleep(K_SECONDS(2));
+
+                        // // for test
+                        // if(tx_payload_wraped_num == 0){
+                        //         sample_switch = true;
+                        // }
 
                 }else if(!sampling){
                         /* re-configration rhd with specific sample mode */
@@ -616,32 +682,43 @@ int main(void)
                         RHD_tx_buf_setup();
                         
                         // for timestamp alignment
-                        if(!mode_switch_flag){ // normal 
-                                // 保证 在下位机到中继端的时间延迟最小
-                               
-                                LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
-                                while(!esb_is_idle()){};
-                                esb_flush_tx();
-                                // TODO 注意： nrf 本身的时钟存在误差：大约在每半分钟，慢1ms，可能通过拟合函数来校正，或者其他的时间对齐方案
+                                // 注意： nrf 本身的时钟存在误差：大约在每半分钟，慢1ms，可能通过拟合函数来校正，或者其他的时间对齐方案
                                 // set retransimit count to 0 保证时间延迟的稳定性 
-                                // TODO 时间延迟有多少还需要通过有线的方式来测试：理论上：ramp up：140us；其余处理 几百us，延时可能在1ms以内
+                                //  时间延迟有多少还需要通过有线的方式来测试：理论上：ramp up：140us；其余处理 几百us，延时可能在1ms以内
                                 // 也可以通过 数据特征和事件来做定义
+                        if(!mode_switch_flag){ // normal 
+                                while(!esb_is_idle()){};
+                                packet_sent_counter[1] = 0; // clear the esb fail flag
+                                rf_channel = esb_rf_channel_scan(); 
+                                rf_channel = 5; // TODO selected channel: using default : 84
+                                // 保证 在下位机到中继端的时间延迟最小
+                                LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
+                                esb_flush_tx();
+                               
                                 esb_set_retransmit_count(0);
-
-                                timerecording = packet_sent_counter[0];
                                 err = timestamp_payload_wrap();
                                 while(!esb_is_idle()){};
-
                                 // check if the command has sent success
-                                while((esb_pop_tx() != -ENODATA) || (packet_sent_counter[0] - timerecording == 0)){
+                                while(packet_sent_counter[1]){ // pop the newest packets
                                         // failed 
+                                        packet_sent_counter[1] = 0;
                                         esb_flush_tx();
-                                        timerecording = packet_sent_counter[0];
+
+                                        // use next adv channel
+                                        advise_channel++;
+                                        if(advise_channel >= sizeof(rf_channel_list)){
+                                                advise_channel = 0;
+                                        }
+                                        esb_set_rf_channel(rf_channel_list[advise_channel]);
                                         err = timestamp_payload_wrap();
                                         while(!esb_is_idle()){};
+                                        // k_sleep(K_MSEC(1000));
                                 }
                                 LED_hinting(100, 5);
-                                esb_set_retransmit_count(1);
+
+                                // select the esb params
+                                esb_set_retransmit_count(2);
+                                esb_set_rf_channel(rf_channel_list[rf_channel]);
 
                         }else{ // fast mode switch
                                 mode_switch_flag = false;
@@ -662,6 +739,11 @@ int main(void)
                 * 变的稳定，还是需要大的fifo来让传输时间分散开了，更有利于稳定的传输；同时这样可以同时放多个包进去来增加速率
                 * 现在使用 溢出检测的方法可以不需要要求esb 的传输必须在一个时间周期之内完成
                 */
+
+               /*
+               注意： 目前在esb 驱动中，设置fifo 为 8,保证 三个模式的使用；同时重发失败后会丢弃，并进入esb 休眠 （esb 驱动改写）
+               避免esb 的休眠周期被打乱导致功耗上升
+               */
                 if(buffer_is_full && sampling){ // a package is ready! 6.1ms per package for 96 data points
                 /*** 0. next package process ***/
                         buffer_is_full = false;
@@ -669,13 +751,16 @@ int main(void)
                         // the timestamp is absolutely value from power up for each packages
                         packet_timestamp = k_uptime_get_32(); // ms CONFIG_SYS_CLOCK_TICKS_PER_SEC depend the time resolution
                         timestamp_LTNSRS = packet_timestamp;
+                        
+                        dynamic_retransmit(); // 必须放在packet_timestamp 更新之后
+                        
                 /*** 0.1. imu lc data read ***/
                         // 注意： memset 效率不高这个memset 函数
                         if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
                                 LSM6DS3_Read(); // 500us 6-axis blocking mode
-                                BatteryPower_Temp_Read(lc_data);
+                                BatteryPower_Temp_Read(lc_data); // 功耗很低
                         }
 
                 /*** 1. structured copy rx_buf data ***/
@@ -690,33 +775,20 @@ int main(void)
                         }
                 /*** 3. ESB package organization ***/ 
                         if(sampe_mode == 0){ // lfp 
-                                if(esb_tx_full()){ // remove one oldest packets
-                                        esb_pop_tx();
-                                }
+                                // means if the fifo is full, the newest packets will not be added to fifo
                                 err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*recorded_channel_num));
                                 // cost 30 us in nrf-52840 to wrap one package with 96 u16_t data
 
                         }else if(sampe_mode == 1){ // spike: one channel raw data + raster
-                                        if(esb_tx_full()){ // remove one oldest packets
-                                                esb_pop_tx();
-                                        }
-
                                         /* for single raw channel MUA_BIN_SIZE: 18 ;SPIKE_SAMPLE_POINT_NUM: 90 */
                                         err = spike_tx_payload_wrap(spike_channel_array[recorded_spike_channel], MutiUnitActivityArray, 
                                                                         imu_data, lc_data, SPIKE_SAMPLE_POINT_NUM, recorded_spike_channel);
                         }else if(sampe_mode == 2){
                                 /* send other sensor data */
-                                if(esb_tx_full()){ // remove one oldest packets
-                                        esb_pop_tx();
-                                }
                                 err = spike_sensor_tx_payload_wrap(imu_data, lc_data);
 
                                 /* here send 4 channel spike raw data with lfp in 3 packets, without spike online detection */
                                 for (int packets_nu = 0 ; packets_nu < 3; packets_nu++){ // 3 packets
-                                        if(esb_tx_full()){ // remove one oldest packets
-                                                esb_pop_tx();
-                                        }
-
                                         for(int ch=0;ch<4;ch++){ // 4 channels
                                                 for (int d=0;d<data_size_per_channel_packets;d++){
                                                         temp_spike_channel_array[d + ch * data_size_per_channel_packets] = 

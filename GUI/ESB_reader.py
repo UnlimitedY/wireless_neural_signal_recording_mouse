@@ -185,6 +185,9 @@ class SerialPort(QThread):
         self.overflow = 0
 
         """ Data stream """
+        self.rssi = 0 # real-time rssi
+        self.rf_channel = 0 # current rf channel
+        self.rf_channel_rssi = 0 # noise rssi
         self.USBFIFO = coll.deque(maxlen=1000)
         self.lfp_data_buffer = ''
         self.lfp_timestamp_buffer = []
@@ -244,7 +247,7 @@ class SerialPort(QThread):
         
         self.overflowSignal = [0, 0] # last and current
 
-        self.LFP_max_interval = 4 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
+        self.LFP_max_interval = 7 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
         self.Spike_max_interval = 6 # same as above but for the minimum value
 
         """ IMU & LC data recording """
@@ -322,7 +325,10 @@ class SerialPort(QThread):
                 # get the category of packets
                 try:
                     packets_type = int(packets[2:4], 16)
-                    packet_length = (len(packets) + 1) / 5
+                    # rssi value occupy one short
+                    self.rssi = round(int(packets[-4:-2], 16) * 0.01 + self.rssi * 0.99 , 2)
+                    packets = packets[0:-5]
+                    packet_length = (len(packets) + 1) / 5 
                 except:
                     packets_type = -1
                     packet_length = 0
@@ -427,7 +433,11 @@ class SerialPort(QThread):
                     pass
                 elif(packets_type == 3): # timestamp payload
                     current_time = int(time.time() * 1000)
-                    timestamp_message = np.array(packets.split(' '))[0:-1] # 取前 5个 short
+                    timestamp_message = np.array(packets.split(' ')) # 取所有个 short
+                    
+                    # rssi 
+                    self.rf_channel =  int(swap16Hex(timestamp_message[5][0:2]) ,16)
+                    self.rf_channel_rssi = int(swap16Hex(timestamp_message[5][2:4]) ,16)
 
                     timestamp_from_pri = ''
                     for bt in timestamp_message[1:5]:
@@ -661,7 +671,7 @@ class SerialPort(QThread):
             self.spikedata_GUI = []
             self.spikerasterdata_GUI = [[] for _ in range(16)]
             self.sensordata_GUI = [[] for _ in range(9)]
-        elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval): 
+        elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval // 5): 
             self.GUIUpdate.emit([[2], self.spiketimestamp_mode2_GUI, self.spikedata_mode2_GUI, self.sensordata_GUI]) # mode 2
             self.spiketimestamp_mode2_GUI = []
             self.sensordata_GUI= [[] for _ in range(9)]
@@ -708,7 +718,7 @@ class SerialPort(QThread):
 
     def timestamp_calibration(self, x, error_per_ms=30000):
         """ input: system on /ms :positive: delayed error; negative: advanced error """
-        return (x + x // error_per_ms) # 每30秒,慢1ms
+        return (x + x // error_per_ms) # 每30秒,慢1ms int value
        
 
     def flush(self):

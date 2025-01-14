@@ -51,6 +51,9 @@ int esb_initialize(void)
     // 注意： 使用ESB 模式，ACK不能附带payload，不能进行全双工的数据传输
 	config.protocol = ESB_PROTOCOL_ESB_DPL; // 设置 传输数据的protocol ,可以选择固定长度的payload length还是动态变化的长度
 	config.retransmit_delay = 450; // 重传的时间延迟 us； 在接收端失效下，450 和600的值产生的failed tx events数量是一样的
+    /*
+    * 注意： 必须要使用2mbps，否则会导致esb 占用cpu资源过多导致 休眠时间不足而功耗剧烈上升；即使1mbps 能增加稳定性
+    */
 	config.bitrate = ESB_BITRATE_2MBPS; // 设置 传输速率
 	config.event_handler = event_handler; // 设置传送的事件的回调函数
 	config.mode = ESB_MODE_PTX; // 设置这台机子是工作在上面mode上 ，ptx or prx ,一般对应多台ptx ,一台prx
@@ -86,6 +89,8 @@ int esb_initialize(void)
     // esb_get_rf_channel() 设置通信所使用的的channel 频率
     // 这个会影响传输重发率和通信距离；在极限的设置下，目前custom board的esb通信距离在20cm左右；而且不能有障碍物；
 	esb_set_tx_power(ESB_TX_POWER_4DBM); 
+
+    esb_set_rf_channel(84); 
 	return 0;
 }
 
@@ -203,6 +208,71 @@ void event_handler(struct esb_evt const *event)
 	}
 }
 
+/*
+* scan : return rssi value (weights) of channel list
+*/
+int esb_rf_channel_scan(void){
+    if(!esb_is_idle()){
+        return -1;
+    }
+    int rssi_reading = 0;
+    uint8_t minimum_rssi_index = 0;
+    uint8_t minimum_rssi = 0;
+
+    for(int i=0;i<sizeof(rf_channel_list);i++){
+        esb_set_rf_channel(rf_channel_list[i]);
+        esb_start_rx();
+        k_sleep(K_USEC(300)); // wait for booting up
+
+        rssi_reading = 0;
+        for(int j = 0; j < 10; j ++)
+        {
+            NRF_RADIO->TASKS_RSSISTART = 1;
+            while(NRF_RADIO->EVENTS_RSSIEND == 0);
+            rssi_reading += NRF_RADIO->RSSISAMPLE;
+             k_sleep(K_USEC(100));
+        }
+        esb_stop_rx();
+        k_sleep(K_USEC(300));
+        rf_channel_rssi_list[i] = rssi_reading/10;
+
+        if(minimum_rssi < rf_channel_rssi_list[i]){
+            minimum_rssi_index = i;
+            minimum_rssi = rf_channel_rssi_list[i];
+        }
+        
+    }
+
+    esb_set_rf_channel(rf_channel_list[rf_channel]);
+    return minimum_rssi_index; 
+}
+
+/*
+* select channel and bitrate
+*/
+int esb_shake_hand_request(void){
+    // check if the esb is idle but fifo not empty, which means the retranmition failed
+    if(esb_is_idle() && !esb_tx_empty()){
+        // send a packet (request) with params    
+        // change the front packets
+        u8_t channel_temp;
+        if(rf_channel < 5){
+            channel_temp = rf_channel_list[rf_channel + 1];
+        }else{
+            channel_temp = rf_channel_list[0];
+        }
+        esb_tx_front_channel(channel_temp);
+    }
+}
+
+int esb_shake_hand_received(void){
+    // check if request success, change the params
+    if(!esb_tx_empty()){
+    // TODO
+    }
+}
+
+
 int timestamp_payload_wrap(void){
     timestamp_payload.noack = 0;
     stamp_check = k_uptime_get();
@@ -212,6 +282,7 @@ int timestamp_payload_wrap(void){
         timestamp_payload.data[4 - i] = (stamp_check >> (i * 16)) & 0xFFFF;
     }
     timestamp_payload.data[0] = 0x0300;	// payload type		
+    timestamp_payload.data[5] = ((u16_t)rf_channel_rssi_list[rf_channel]) << 8 | (u16_t)rf_channel_list[rf_channel];
     return esb_write_payload(&timestamp_payload); 
 }
 
@@ -226,7 +297,7 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
-    // 1. pre-head of packet 0xXXYY---XX is type; YY is the number of recorded channels
+    // 1. pre-head of packet 0xXXYY---XX is rf_channel; YY is the number of recorded channels
     tx_payload.data[0] = 0x0100 | recorded_channel_num; 
     // 2. package signal including: real-time timestamp; overflow_signal
     tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 

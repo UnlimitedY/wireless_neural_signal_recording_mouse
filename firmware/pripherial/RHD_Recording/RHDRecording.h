@@ -75,8 +75,8 @@ extern u16_t channel_array[16][SAMPLE_POINT_NUM * time_window];	 // 100 samples 
 /* for spike 4 channels raw data + raster data the sample rate is about 20khz; the value of this array will be assigned every sample bin period */
 #define SPIKE_SAMPLE_POINT_NUM 90 
 #define SPIKE_CONVERT_FASHION_NUM 19
-#define SPIKE_SPI_TX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM * time_window)
-#define SPIKE_SPI_RX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM * time_window)
+#define SPIKE_SPI_TX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM)
+#define SPIKE_SPI_RX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM)
 
 #define MUA_BIN_SIZE 18 // must be the factor of @SPIKE_SAMPLE_POINT_NUM : ~ 1ms in 17khz sampling
 
@@ -90,10 +90,10 @@ extern u16_t spike_m_rx_buf[2][SPIKE_RX_BUFFER_SIZE]; /*< RX buffer. double buff
 // extern uint32_t spike_m_tx_buf_addr;
 // extern uint32_t spike_m_rx_buf_addr;
 
-extern u16_t spike_channel_array_t[SPIKE_SAMPLE_POINT_NUM * time_window];
-extern u16_t spike_channel_array[16][SPIKE_SAMPLE_POINT_NUM * time_window];	
+extern u16_t spike_channel_array_t[SPIKE_SAMPLE_POINT_NUM];
+extern u16_t spike_channel_array[16][SPIKE_SAMPLE_POINT_NUM];	
 
-extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE) * time_window]; // 21 sample each MUA bin. 105 sample is equal to 5 bins and 16 channels correspond to 5 shorts ,given that 1bit/sample
+extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE)]; // 21 sample each MUA bin. 105 sample is equal to 5 bins and 16 channels correspond to 5 shorts ,given that 1bit/sample
 
 
 /*************spi init***************/
@@ -112,11 +112,11 @@ extern const u16_t NINE_DUMMPY[9];
 #define CLEAR 0x006A	 // not necessary to use this command
 						 // Registers configuration using write command
 
-/************************ lfp 2khz sampling setting ************************/                         
+/************************ lfp 1khz sampling setting ************************/                         
 #define lfp_Register0 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
 #define lfp_Register0_enable 0xde80 // amp fast settle is 0, enable ADC
 
-#define lfp_Register1 0x2081 // VDD sense disable ,using 16 * 2 KS/s ADC
+#define lfp_Register1 0x2081 // VDD sense disable ,using 16 * 1 KS/s ADC
 #define lfp_Register2 0x2882 // MUX bias current, configuration as above
 
 #define lfp_Register3 0x0083 // diable tempS and digout

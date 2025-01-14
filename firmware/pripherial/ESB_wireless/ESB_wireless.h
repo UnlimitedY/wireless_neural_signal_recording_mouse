@@ -12,6 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
 
+
 /*
  * typedef
  */
@@ -23,7 +24,7 @@ extern bool sample_switch;
 extern bool mode_switch_flag;
 extern u16_t sampe_mode;
 
-extern u32_t packet_sent_counter[2]; // count the sent package number: [0] is success; [1] is fail
+extern uint32_t packet_sent_counter[2]; // count the sent package number: [0] is success; [1] is fail
 extern u8_t HABITS_events; // define the events of HABITS
 
 extern u8_t raw_channel[16]; // define which channels used
@@ -38,6 +39,12 @@ extern uint64_t stamp_check; // real-time timestamp from the power-up
 extern bool sensor_update_flag; // flag of the sensor data is updated
 
 extern u16_t threshold_list[16];
+
+#define rf_channel_num 6
+extern uint8_t rf_channel_list[rf_channel_num]; // list of channels
+extern uint8_t rf_channel_rssi_list[rf_channel_num]; // list of channels
+extern uint8_t bitrate; 
+extern uint8_t rf_channel;
 
 #define _RADIO_SHORTS_COMMON                                       \
 	(RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk | \
@@ -70,12 +77,16 @@ extern uint32_t timestamp_baseline; // baseline timestamp updated by alignment e
 /*****************************ESB function***************************************/
 // esb init
 int clocks_start(void);
-
 int esb_initialize(void);
+
+// esb params alignment
+int esb_shake_hand_request(void);
+int esb_shake_hand_received(void);
+
+int esb_rf_channel_scan(void);
 
 // esb callback
 void event_handler(struct esb_evt const *event);
-
 void command_process(uint8_t length, uint16_t *data); // command process & behavioral events & behavioral timestamps
 
 // timestamp_payload wrap function: every sample onset
