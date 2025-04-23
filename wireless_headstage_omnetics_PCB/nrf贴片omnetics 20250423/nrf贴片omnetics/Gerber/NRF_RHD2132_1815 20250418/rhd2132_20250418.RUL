@@ -1,0 +1,6 @@
+DRC Rules Export File for PCB: E:\SHW\01 工作文件\08 16路EEG\02 外发\NRF-RHD_V0.3_1813 200250418\rhd2132_20250418.PcbDoc
+RuleKind=Clearance|RuleName=Clearance_1|Scope=Board|Minimum=7.87
+RuleKind=SolderMaskExpansion|RuleName=SolderMaskExpansion|Scope=Board|Minimum=4.00
+RuleKind=Width|RuleName=Width|Scope=Board|Minimum=4.00
+RuleKind=Clearance|RuleName=Clearance|Scope=Board|Minimum=4.02
+RuleKind=ShortCircuit|RuleName=ShortCircuit|Scope=Board|Allowed=0

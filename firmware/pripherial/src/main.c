@@ -10,6 +10,7 @@
 
 #include "..\Sensor_recording\LC709204F.h"
 #include "..\Sensor_recording\LSM6DS3.h"
+#include "..\Sensor_recording\mp2710.h"
 
 // for debugging
 #include <zephyr/logging/log.h>
@@ -156,7 +157,7 @@ u8_t spike_raw_channel[4] = {0, 1, 2, 3}; // mode 2
 u8_t recorded_spike_channel = 0; // default: enable channel 0; mode 1
 
 // neural recording 
-u8_t channel_16_order[CONVERT_FASHION_NUM] = {17, 18, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}; // rx_buf retrievial order; > 16 is dummary results
+u8_t channel_16_order[CONVERT_FASHION_NUM] = {18, 19, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}; // rx_buf retrievial order; > 16 is dummary results
 
 /********************************sensor setup**********************************/
 // const struct device *lc_twim = DEVICE_DT_GET(DT_NODELABEL(i2c0));
@@ -191,6 +192,31 @@ int16_t lc_data[3];
 
 struct IMU_settings settings;
 
+void setup_battery_charge(void){
+        twim_init(); 
+        k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
+        // 初始化 2710
+	bool check_2710; 
+	check_2710 = mp2710_init();
+	while(!check_2710){
+                LED_hinting(500, 2);
+                LOG_INF("MP2710 battery init failed");
+                k_sleep(K_SECONDS(1));  
+	}
+
+        // setting
+        mp2710_set_default_values();
+        mp2710_write_regs();
+}
+
+void get_battery_status(void){
+        // TODO
+}
+
+void disconnect_battery(void){
+        mp2710_enter_shipping_mode();
+}
+
 void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导致 发热问题，可能是gpio 上拉电流过大
 	int err;
         // init lsm spim
@@ -221,20 +247,20 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
                 };
         }
 
-        /******* for LC *******/
-        twim_init(); 
-        k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
-        // 初始化 LC battery
-	int LCID; // APT
-	LCID = getChipID();
-	while(LCID != 0x001e){
-                LED_hinting(500, 2);
-                LOG_INF("LC battery init failed %x \n" ,LCID);
-                LCID = getChipID();
-                k_sleep(K_SECONDS(1));  
-	}
-	//test 50mAH capacity ;
-	LC_init();
+        // /******* for LC  not used *******/
+        // twim_init(); 
+        // k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
+        // // 初始化 LC battery
+	// int LCID; // APT
+	// LCID = getChipID();
+	// while(LCID != 0x001e){
+        //         LED_hinting(500, 2);
+        //         LOG_INF("LC battery init failed %x \n" ,LCID);
+        //         LCID = getChipID();
+        //         k_sleep(K_SECONDS(1));  
+	// }
+	// //test 50mAH capacity ;
+	// LC_init();
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
@@ -245,7 +271,7 @@ void LSM6DS3_Read(void){ // only recording 3-axis
 	LSM6DS3_read_gyro_data();
 }
 
-void BatteryPower_Temp_Read(u16_t *data){
+void BatteryPower_Temp_Read(u16_t *data){ // not used
 	// RSOC
 	LC_getRSOC(data); // 0-100%
 	// battery status
@@ -279,7 +305,8 @@ u16_t init_everything(void){
         memset(imu_data, 0, sizeof(imu_data));
         memset(lc_data, 0, sizeof(lc_data));
         
-        setup_sensor();
+        setup_battery_charge();
+        // setup_sensor();
         /**************** ESB init ******************/     
         err = clocks_start();
 	if (err)
@@ -316,7 +343,7 @@ u16_t init_RHD(){
                 * 注意： 使用lfp 2khz 需要保证数据的发送经可能 快，以免休眠时间不够 （在3.1ms下，最多只能发送一个包，少量重发）
                 优先使用1khz 采样 (在7ms 内，发送3个包以内可以保证15mw功率)
                 */
-                timer_period = 52; 
+                timer_period = 50; 
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
         }else if(sampe_mode == 1){
@@ -572,7 +599,7 @@ int dynamic_retransmit(void){
                 // change retransmit count
                 if(indicate_commu < 20){
                         sample_watch_dog = 0;
-                        esb_set_retransmit_count(2);
+                        esb_set_retransmit_count(0); // 2
                 }else if (indicate_commu < 100){
                         sample_watch_dog = 0;
                         esb_set_retransmit_count(0);
@@ -659,12 +686,12 @@ int main(void)
                                 LOG_INF("%d esb empty payload failed", err);
                         }
                         LED_hinting(200, 2);
-                        k_sleep(K_SECONDS(2));
+                        k_sleep(K_SECONDS(5));
 
                         // // for test
-                        // if(tx_payload_wraped_num == 0){
-                        //         sample_switch = true;
-                        // }
+                        if(tx_payload_wraped_num == 0){
+                                sample_switch = true;
+                        }
 
                 }else if(!sampling){
                         /* re-configration rhd with specific sample mode */
@@ -689,7 +716,7 @@ int main(void)
                         if(!mode_switch_flag){ // normal 
                                 while(!esb_is_idle()){};
                                 packet_sent_counter[1] = 0; // clear the esb fail flag
-                                rf_channel = esb_rf_channel_scan(); 
+                                // rf_channel = esb_rf_channel_scan(); 
                                 rf_channel = 5; // TODO selected channel: using default : 84
                                 // 保证 在下位机到中继端的时间延迟最小
                                 LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
@@ -717,7 +744,8 @@ int main(void)
                                 LED_hinting(100, 5);
 
                                 // select the esb params
-                                esb_set_retransmit_count(2);
+                                // esb_set_retransmit_count(2);  // 2 比较稳定
+                                esb_set_retransmit_count(1);
                                 esb_set_rf_channel(rf_channel_list[rf_channel]);
 
                         }else{ // fast mode switch
@@ -759,8 +787,8 @@ int main(void)
                         if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
-                                LSM6DS3_Read(); // 500us 6-axis blocking mode
-                                BatteryPower_Temp_Read(lc_data); // 功耗很低
+                                // LSM6DS3_Read(); // 500us 6-axis blocking mode
+                                // BatteryPower_Temp_Read(lc_data); // 功耗很低
                         }
 
                 /*** 1. structured copy rx_buf data ***/

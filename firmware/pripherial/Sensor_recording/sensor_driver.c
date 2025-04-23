@@ -1,5 +1,37 @@
 #include "sensor_driver.h"
 
+/*******************for MP2710 IIC********************/
+bool MP2170_twi_data_write(uint8_t slaveAddr, uint8_t regAddr, uint8_t pData){
+    uint8_t send[3];
+    send[0] = slaveAddr;
+    send[1] = regAddr;
+    send[2] = pData;
+
+    nrfx_twim_xfer_desc_t twi_desc = NRFX_TWIM_XFER_DESC_TX(slaveAddr, send + 1, 2);
+    nrfx_twim_xfer(&lc_twim, &twi_desc, 0);
+    return true;
+}
+
+nrfx_err_t MP2170_twi_data_read(uint8_t slaveAddr, uint8_t regAddr, uint8_t *pData){
+    nrfx_err_t err;
+    LCDataBuffer[0] = slaveAddr; // write byte
+    LCDataBuffer[1] = regAddr;                       // command / register
+    LCDataBuffer[2] = LCDataBuffer[0] | 0x1;                // read byte
+
+
+    nrfx_twim_xfer_desc_t twi_desc = NRFX_TWIM_XFER_DESC_TX(slaveAddr, LCDataBuffer + 1, 1); // 注意： iic 的地址不需要关系读写的位数，地址一般是高7位，驱动会自行配置读写位
+    err = nrfx_twim_xfer(&lc_twim, &twi_desc, NRFX_TWIM_FLAG_TX_NO_STOP);
+
+    nrfx_twim_xfer_desc_t twi_desc1 = NRFX_TWIM_XFER_DESC_RX(slaveAddr, LCDataBuffer + 3, 1);
+    err = nrfx_twim_xfer(&lc_twim, &twi_desc1, 0);
+
+    *pData = LCDataBuffer[3];
+
+    return true;
+}
+
+
+/*******************for LC IIC********************/
 /* working in blocking mode, Note:TXRX only can work under this non-blocking mode*/
 
 bool LC_twi_data_write(uint8_t slaveAddr, uint8_t regAddr, uint16_t pData)

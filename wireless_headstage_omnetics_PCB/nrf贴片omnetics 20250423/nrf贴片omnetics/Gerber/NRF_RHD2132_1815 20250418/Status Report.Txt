@@ -1,0 +1,12 @@
+Output: NC Drill Files
+Type  : NC Drill
+From  : Project [NRF_RHD2132_1813_YBW.PrjPcb]
+   Generated File[rhd2132_20250418.TXT]
+   Generated File[rhd2132_20250418.LDP]
+   Generated File[rhd2132_20250418.DRR]
+
+
+Files Generated   : 3
+Documents Printed : 0
+
+Finished Output Generation At 14:51:37 On 2025/4/18

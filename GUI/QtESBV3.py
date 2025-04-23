@@ -27,6 +27,8 @@ from PyQt6 import QtCore, QtWidgets
 import time
 from multiprocessing import Process ,Queue
 
+from scipy.fftpack import fft
+
 #TODO UI color legend&symbol dont work ; all nan value bug
 """ hypo defintion """
 Max_pipe = 5 
@@ -335,8 +337,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
         self.battery_Btemp_channel = pg.PlotCurveItem(None, None,pen='#FFFFFF') # battery temp line
         self.Btemp_v1_channel.addItem(self.battery_Btemp_channel)
         self.Btemp_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
-        self.Btemp_v1_channel.setYRange(0 ,50)
-        self.Btemp_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=0, yMax=50) # 摄氏度
+        # self.Btemp_v1_channel.setYRange(0 ,50)
+        # self.Btemp_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=0, yMax=50) # 摄氏度
         
         """ addWidget """
         self.verticalLayout_3.addWidget(self.spike_channel)
@@ -408,6 +410,23 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                 # update data
                 self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0] ,pen=pg.mkPen({'color': 'w' ,'width':1}))
 
+                #####################################
+                if(self.spikeaccumulpackets_mode_1 % 100 == 0):
+                    # 频谱分析
+                    # 执行FFT
+                    N = len(self.spike_raw_data[0])
+                    Fs = 17544
+                    fft_result = fft(self.spike_raw_data[0])
+                    # 计算频率轴的值
+                    freqs = np.fft.fftfreq(N, 1/Fs)
+                    # 获取FFT结果的幅度
+                    magnitude = np.abs(fft_result)
+                    # 由于对称性，只取一半的频率范围
+                    half_freqs = freqs[:N//2]
+                    half_magnitude = magnitude[:N//2]
+                    self.battery_Btemp_channel.setData(half_freqs, half_magnitude)
+                #####################################
+
                 #### raster data update
                 # update infinited line
                 self.spike_raster_updating_indicater_mode_1.setPos(self.ring_spike_raster_pointer)
@@ -455,6 +474,8 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
                         # re-init raw data
                         self.spike_mode2_raw_data[i] = np.full((1 ,self.spike_display_data_num) ,np.nan)
                         self.LFP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))
+
+                        
                 # if(self.reinit_rawdata_mode2_temp == 4):
                 #     self.reinit_rawdata_mode2 = False
                 # self.reinit_rawdata_mode2_temp = 0      
@@ -472,7 +493,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
             
             # battery data
             self.battery_RSOC_channel.setData(self.LSR_timestamp ,self.RSOC[0], pen=pg.mkPen({'color': self.colorList[0] ,'width':1}),symbol='o')
-            self.battery_Btemp_channel.setData(self.LSR_timestamp ,self.battery_temp[0], pen=pg.mkPen({'color': self.colorList[0] ,'width':1}),symbol='o')
+            # self.battery_Btemp_channel.setData(self.LSR_timestamp ,self.battery_temp[0], pen=pg.mkPen({'color': self.colorList[0] ,'width':1}),symbol='o')
              
     def raw_data_generator(self ,port, data):
         """
@@ -812,7 +833,7 @@ class ESBMainWindow(QtWidgets.QMainWindow ,QtESBV3_UI.Ui_MainWindow):
 
     def closeEvent(self, event): 
         reply = QMessageBox.question(self.MainWindow, 'Message',"Are you sure to quit?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No )
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No ) 
 
         if reply == QMessageBox.StandardButton.Yes:
             #TODO thread quit and sample stop and so on...

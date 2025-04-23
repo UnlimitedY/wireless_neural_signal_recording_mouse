@@ -183,6 +183,7 @@ class SerialPort(QThread):
         # for test
         self.receive_num_packet = 0
         self.overflow = 0
+        self.qq = 0
 
         """ Data stream """
         self.rssi = 0 # real-time rssi
@@ -247,7 +248,7 @@ class SerialPort(QThread):
         
         self.overflowSignal = [0, 0] # last and current
 
-        self.LFP_max_interval = 7 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
+        self.LFP_max_interval = 8 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
         self.Spike_max_interval = 6 # same as above but for the minimum value
 
         """ IMU & LC data recording """
@@ -359,12 +360,15 @@ class SerialPort(QThread):
                         self.lfp_timestamp_buffer = []
                         self.lfp_data_buffer = ''
                     # file saving
-                    self.save_lfp_file()
+                    # self.save_lfp_file()
 
                     """  spike packets: mode 1 """
                 elif(packets_type == 2 and packet_length == 108): 
                     self.SPIKERawCounter += 1
                     spike_timestamp_mode1_temp = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
+                    
+                    print(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) - self.qq)
+                    self.qq = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     self.spike_timestamp_buffer.append(spike_timestamp_mode1_temp) # timestamp
                     self.spike_channel_index_mode1 = int(packets[0:2] ,16) # channel index of current packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
@@ -640,8 +644,8 @@ class SerialPort(QThread):
             """
             now_time=datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
             # TODO 后续开启一个定时线程合并这些temp 文件 ；每n小时一个文件
-            # np.save('test_RawData_{}_{}.npy'.format(self.sample_times,now_time) ,self.raw_data, dict)
-            # np.save('test_SensorData_{}_{}.npy'.format(self.sample_times,now_time) ,self.sensors_data , dict)
+            np.save('test_RawData_{}_{}.npy'.format(self.sample_times,now_time) ,self.raw_data, dict)
+            np.save('test_SensorData_{}_{}.npy'.format(self.sample_times,now_time) ,self.sensors_data , dict)
             
             # 3. reinit the temp array
             self.raw_data = get_raw_data_container()

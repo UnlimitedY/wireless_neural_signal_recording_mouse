@@ -51,7 +51,7 @@ typedef unsigned int u32_t;
 /* for LFP 16 channels raw data */
 // 19 commands as one command packet; the bin size is 100 samples every channel
 #define SAMPLE_POINT_NUM 7
-#define CONVERT_FASHION_NUM 19 // 16 channels + 3 dummy slots; 注意：因为rhd 读取数据有2个spi事件的延迟，所以至少需要有两个empty slots
+#define CONVERT_FASHION_NUM 20 // 16 channels + 3 dummy slots; 注意：因为rhd 读取数据有2个spi事件的延迟，所以至少需要有两个empty slots
 #define SPI_TX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) // 7 * 16 * 2 == 224 bytes
 #define SPI_RX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) //  bytes ;CONVERT_FASHION_NUM * 3(timer duration) * 100 == 5.1ms  ,using half of RX buffer to get achieve data process in line with data acquiration
 #define m_length 2

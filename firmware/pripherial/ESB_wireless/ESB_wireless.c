@@ -86,9 +86,10 @@ int esb_initialize(void)
 	if (err) {
 		return err;
 	}
-    // esb_get_rf_channel() 设置通信所使用的的channel 频率
+
     // 这个会影响传输重发率和通信距离；在极限的设置下，目前custom board的esb通信距离在20cm左右；而且不能有障碍物；
-	esb_set_tx_power(ESB_TX_POWER_4DBM); 
+	// esb_set_tx_power(ESB_TX_POWER_4DBM); 
+    esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
 
     esb_set_rf_channel(84); 
 	return 0;

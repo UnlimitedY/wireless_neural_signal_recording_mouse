@@ -1,0 +1,38 @@
+2025-03-14 22:17:56,087 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-14 22:17:56,622 - HABITS - ERROR - 串口读取错误: 'utf-8' codec can't decode byte 0x81 in position 1150: invalid start byte
+2025-03-14 22:17:56,634 - HABITS - INFO - 串口 COM20 已断开连接
+2025-03-14 22:18:16,400 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-14 22:18:25,861 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:18:39,845 - HABITS - ERROR - 串口读取错误: 'utf-8' codec can't decode byte 0xb8 in position 2: invalid start byte
+2025-03-14 22:18:39,856 - HABITS - INFO - 串口 COM20 已断开连接
+2025-03-14 22:18:41,857 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-14 22:18:46,405 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:04,036 - HABITS - INFO - 串口 COM20 已断开连接
+2025-03-14 22:19:04,999 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-14 22:19:09,685 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:12,837 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:13,859 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:14,791 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:16,237 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:17,939 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:18,405 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:18,597 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:18,765 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:18,933 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,093 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,261 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,405 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,565 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,717 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:19,869 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,013 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,157 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,293 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,444 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,573 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:20,708 - HABITS - ERROR - 串口 COM20 连接错误: could not open port 'COM20': PermissionError(13, '拒绝访问。', None, 5)
+2025-03-14 22:19:23,318 - HABITS - INFO - 串口 COM20 已断开连接
+2025-03-14 22:27:58,808 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-14 22:30:01,085 - HABITS - INFO - 串口 COM20 已断开连接
+2025-03-17 16:50:06,325 - HABITS - INFO - 串口 COM20 连接成功
+2025-03-17 16:50:07,194 - HABITS - INFO - 串口 COM20 已断开连接

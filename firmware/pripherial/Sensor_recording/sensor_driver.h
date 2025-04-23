@@ -10,16 +10,16 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/i2c.h>
 
-/* working in blocking mode for LC */
+/* working in blocking mode for LC or mp2710 */
 /* spi for lsm */
 /*Pin Definitions*/
 
 #define I2C0_NODE DT_NODELABEL(i2c0)
-#define LC_SDA_PIN             22
-#define LC_SCL_PIN             25
+#define LC_SDA_PIN             25 //  25 for omnetics 22 for other
+#define LC_SCL_PIN             22 //  22 for omnetics 25 for other
 
-#define LSM_CS_PIN              NRF_GPIO_PIN_MAP(0, 30)
-#define LSM_SCL_PIN             NRF_GPIO_PIN_MAP(0, 1) // NRF_GPIO_PIN_MAP(0, 1)
+#define LSM_CS_PIN              NRF_GPIO_PIN_MAP(0, 28) // 28 for omnetics  30 for other
+#define LSM_SCL_PIN             NRF_GPIO_PIN_MAP(0, 30) // NRF_GPIO_PIN_MAP(0, 1) for other  30 for omnetics
 #define LSM_SDI_PIN             NRF_GPIO_PIN_MAP(0, 8) // Data input: MOSI
 #define LSM_SDO_PIN             NRF_GPIO_PIN_MAP(1, 9) // Data output: MISO: PIN 1.09 32 + 9
 
@@ -41,6 +41,12 @@ extern const nrfx_spim_t lsm_spi; /**< SPI instance. */
 /*************************************functions******************************************/
 nrfx_err_t twim_init (void); // not use when using device tree configration
 
+// for MP2710 battery charge
+bool MP2170_twi_data_write(uint8_t slaveAddr, uint8_t regAddr, uint8_t pData);
+
+nrfx_err_t MP2170_twi_data_read(uint8_t slaveAddr, uint8_t regAddr, uint8_t *pData);
+
+// for LC
 uint8_t cal_crc_table(uint8_t *data, uint8_t len);
 
 uint8_t cal_bytes_crc8(uint8_t *data, uint8_t len);
