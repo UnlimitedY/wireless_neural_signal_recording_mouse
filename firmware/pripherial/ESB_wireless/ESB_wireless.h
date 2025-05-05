@@ -23,6 +23,7 @@ typedef unsigned int u32_t;
 extern bool sample_switch;
 extern bool mode_switch_flag;
 extern u16_t sampe_mode;
+extern u32_t tx_payload_wraped_num;
 
 extern uint32_t packet_sent_counter[2]; // count the sent package number: [0] is success; [1] is fail
 extern u8_t HABITS_events; // define the events of HABITS

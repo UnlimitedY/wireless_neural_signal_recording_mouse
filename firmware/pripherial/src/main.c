@@ -85,7 +85,7 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 bool mode_switch_flag = false; 
 
 u16_t sampe_mode = 0; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
-uint32_t timer_period = 26; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
+uint32_t timer_period = 50; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
 uint32_t reset_ticks_value = SPI_RX_BUF_SIZE;
 
 volatile bool spi_buff_flag = false;
@@ -158,6 +158,7 @@ u8_t recorded_spike_channel = 0; // default: enable channel 0; mode 1
 
 // neural recording 
 u8_t channel_16_order[CONVERT_FASHION_NUM] = {18, 19, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}; // rx_buf retrievial order; > 16 is dummary results
+u8_t channel_16_order_spike[SPIKE_CONVERT_FASHION_NUM] = {14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}; // rx_buf retrievial order; > 16 is dummary results
 
 /********************************sensor setup**********************************/
 // const struct device *lc_twim = DEVICE_DT_GET(DT_NODELABEL(i2c0));
@@ -196,10 +197,10 @@ void setup_battery_charge(void){
         twim_init(); 
         k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
         // 初始化 2710
-	bool check_2710; 
+	bool check_2710 = false; 
 	check_2710 = mp2710_init();
 	while(!check_2710){
-                LED_hinting(500, 2);
+                // LED_hinting(500, 2);
                 LOG_INF("MP2710 battery init failed");
                 k_sleep(K_SECONDS(1));  
 	}
@@ -209,8 +210,16 @@ void setup_battery_charge(void){
         mp2710_write_regs();
 }
 
-void get_battery_status(void){
-        // TODO
+void get_battery_status(){
+        mp2710_t *p = &m_mp2710;
+        mp2710_read_reg(8);
+        mp2710_read_reg(9);
+        // charge status
+        lc_data[0] = p->CHG_STAT;
+        // PPM status
+        lc_data[1] = p->PPM_STAT;
+        // Power status
+        lc_data[2] = p->PG_STAT;
 }
 
 void disconnect_battery(void){
@@ -241,26 +250,14 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 	err = LSM6DS3_init(); // 注意使用 high sample rate 的accle采样的时候要提前开启high performance mode ;同时active gryo 
 	if(err != 0){
                 while(1){
-                        LED_hinting(500, 2);
+                        // LED_hinting(500, 2);
                         LOG_INF("LSM6DS3_init %x \n" ,err);
                         k_sleep(K_SECONDS(1));
                 };
         }
 
-        // /******* for LC  not used *******/
-        // twim_init(); 
-        // k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
-        // // 初始化 LC battery
-	// int LCID; // APT
-	// LCID = getChipID();
-	// while(LCID != 0x001e){
-        //         LED_hinting(500, 2);
-        //         LOG_INF("LC battery init failed %x \n" ,LCID);
-        //         LCID = getChipID();
-        //         k_sleep(K_SECONDS(1));  
-	// }
-	// //test 50mAH capacity ;
-	// LC_init();
+        LSM6DS3_set_gyro_sleep_mode(); // disable gyro
+
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
@@ -268,7 +265,7 @@ void LSM6DS3_Read(void){ // only recording 3-axis
         * 记录 6-axis的值；关闭 角加速度测量；注意：在lsm_init中要对应开启角加速度mode和配置寄存器
         */
 	LSM6DS3_read_accl_data();
-	LSM6DS3_read_gyro_data();
+	// LSM6DS3_read_gyro_data();
 }
 
 void BatteryPower_Temp_Read(u16_t *data){ // not used
@@ -306,7 +303,7 @@ u16_t init_everything(void){
         memset(lc_data, 0, sizeof(lc_data));
         
         setup_battery_charge();
-        // setup_sensor();
+        setup_sensor();
         /**************** ESB init ******************/     
         err = clocks_start();
 	if (err)
@@ -343,16 +340,17 @@ u16_t init_RHD(){
                 * 注意： 使用lfp 2khz 需要保证数据的发送经可能 快，以免休眠时间不够 （在3.1ms下，最多只能发送一个包，少量重发）
                 优先使用1khz 采样 (在7ms 内，发送3个包以内可以保证15mw功率)
                 */
-                timer_period = 50; 
+                timer_period = 50; // 注意： 使用50us 一次spi，配合16 + 4 dummy sample sequence，可以实现1KHz的精准采样
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
+                
         }else if(sampe_mode == 1){
-                // spike 17khz : 5985 us -> ~6 ms one packet
-                timer_period = 3; // 5: 10,526 Hz ; 6: 8772 Hz ;  3: 17,544 Hz; 4: 13,158 Hz
+                // spike 20833Hz (0 dummy) : 4320 us -> ~4.3 ms one packet
+                timer_period = 3; // 5: 12500 Hz ; 6: 10417 Hz ;  3: 20833 Hz; 4: 15625 Hz (0 dummy)
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike);
         }else if(sampe_mode == 2){ 
-                // spike 17khz : 5985 us -> ~6 ms one packet
+                // spike 20khz
                 timer_period = 3; 
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike_raw);
@@ -427,9 +425,9 @@ void structure_rx_data(){
                         for (u16_t u = 0; u < SPIKE_CONVERT_FASHION_NUM; u++)
                         {
                                 // 2 steps delay converted result
-                                if (channel_16_order[u] < 16)
+                                if (channel_16_order_spike[u] < 16)
                                 {       
-                                        spike_channel_array[channel_16_order[u]][g] = spike_m_rx_buf[!spi_buff_flag][SPIKE_CONVERT_FASHION_NUM * g + u];
+                                        spike_channel_array[channel_16_order_spike[u]][g] = spike_m_rx_buf[!spi_buff_flag][SPIKE_CONVERT_FASHION_NUM * g + u];
                                 }
                         }
                 } // channel_array shape is 16 * 100 u16_t ; 
@@ -588,7 +586,7 @@ int dynamic_retransmit(void){
                 return -1;
         }
 
-        if(packet_timestamp - last_statistic_timestamp > 300){ // about 50 packets
+        if(packet_timestamp - last_statistic_timestamp > 1000){ // about 50 packets
                 if((packet_sent_counter[0] + packet_sent_counter[1] == 0)){
                         last_statistic_timestamp = packet_timestamp;
                         return -2;
@@ -597,19 +595,17 @@ int dynamic_retransmit(void){
                 // 获得 发送接收指标： 发送失败率
                 u32_t indicate_commu = (packet_sent_counter[1] * 100) / ((packet_sent_counter[1] + packet_sent_counter[0])); // 百分位
                 // change retransmit count
-                if(indicate_commu < 20){
+                if(indicate_commu < 5){
                         sample_watch_dog = 0;
-                        esb_set_retransmit_count(0); // 2
-                }else if (indicate_commu < 100){
-                        sample_watch_dog = 0;
-                        esb_set_retransmit_count(0);
-                }else if(indicate_commu == 100){
+                        esb_set_retransmit_count(1); // 2
+                }else if(indicate_commu < 100){
                         sample_watch_dog++;
-                        esb_set_retransmit_count(0);
+                        esb_set_retransmit_count(3);
                 }
                 
                 // 确定是否 需要暂停
-                if(sample_watch_dog > 10){ // 3s
+                if(sample_watch_dog > 10){ // 10s
+                        esb_set_retransmit_count(1);
                         sample_switch = false;
                         sample_watch_dog = 0;
                 }      
@@ -652,18 +648,6 @@ int main(void)
         bool sampling = false;
         init_everything();
         /****************************recording start******************************/
-        // for test
-        u32_t test_address;
-        test_address = (uint32_t)&spike_m_tx_buf[0];
-        test_address = (uint32_t)&spike_m_rx_buf[0][0];
-        // test_address = (uint32_t)&spike_m_rx_buf[1][SPIKE_RX_BUFFER_SIZE - 1];
-        // while(1){
-        // running_time_onset();
-
-        // running_time_offset(1);
-                
-        // k_sleep(K_SECONDS(1));
-        // }
         /*********************main loop*********************/
 	while (1) {
                 /**********system command process**********/
@@ -680,18 +664,15 @@ int main(void)
                         }
 
                         /* empty esb packets */
-                        err = empty_payload_wrap();
-                        if(err){
-                                esb_flush_tx();
-                                LOG_INF("%d esb empty payload failed", err);
+                        for(int i=0;i<1;i++){
+                                err = empty_payload_wrap();
+                                // err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*recorded_channel_num));
+                                if(err){
+                                        esb_flush_tx();
+                                        LOG_INF("%d esb empty payload failed", err);
+                                }
                         }
-                        LED_hinting(200, 2);
-                        k_sleep(K_SECONDS(5));
-
-                        // // for test
-                        if(tx_payload_wraped_num == 0){
-                                sample_switch = true;
-                        }
+                        k_sleep(K_MSEC(10));
 
                 }else if(!sampling){
                         /* re-configration rhd with specific sample mode */
@@ -719,7 +700,7 @@ int main(void)
                                 // rf_channel = esb_rf_channel_scan(); 
                                 rf_channel = 5; // TODO selected channel: using default : 84
                                 // 保证 在下位机到中继端的时间延迟最小
-                                LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
+                                // LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
                                 esb_flush_tx();
                                
                                 esb_set_retransmit_count(0);
@@ -741,11 +722,11 @@ int main(void)
                                         while(!esb_is_idle()){};
                                         // k_sleep(K_MSEC(1000));
                                 }
-                                LED_hinting(100, 5);
+                                // LED_hinting(100, 5);
 
                                 // select the esb params
-                                // esb_set_retransmit_count(2);  // 2 比较稳定
-                                esb_set_retransmit_count(1);
+                                esb_set_retransmit_count(1);  // 2 比较稳定
+                                // esb_set_retransmit_count(1);
                                 esb_set_rf_channel(rf_channel_list[rf_channel]);
 
                         }else{ // fast mode switch
@@ -787,8 +768,8 @@ int main(void)
                         if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
-                                // LSM6DS3_Read(); // 500us 6-axis blocking mode
-                                // BatteryPower_Temp_Read(lc_data); // 功耗很低
+                                LSM6DS3_Read(); // 500us 6-axis blocking mode
+                                get_battery_status();
                         }
 
                 /*** 1. structured copy rx_buf data ***/

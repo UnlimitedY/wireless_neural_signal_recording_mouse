@@ -2,7 +2,7 @@
 #include "mp2710.h"
 
 
-static mp2710_t m_mp2710;
+mp2710_t m_mp2710;
 
 void mp2710_i2c_write(uint8_t reg, uint8_t data)
 {

@@ -109,6 +109,8 @@ typedef struct {
     uint8_t  ADDR; // 08h
     uint8_t  LP_FUNC; // available default low power function
 } mp2710_t;
+
+extern mp2710_t m_mp2710;
 /*---------------------------------------------------------------------------*/
 // function
 void mp2710_i2c_write(uint8_t reg, uint8_t data);

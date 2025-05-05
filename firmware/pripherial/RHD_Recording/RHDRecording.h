@@ -51,7 +51,7 @@ typedef unsigned int u32_t;
 /* for LFP 16 channels raw data */
 // 19 commands as one command packet; the bin size is 100 samples every channel
 #define SAMPLE_POINT_NUM 7
-#define CONVERT_FASHION_NUM 20 // 16 channels + 3 dummy slots; 注意：因为rhd 读取数据有2个spi事件的延迟，所以至少需要有两个empty slots
+#define CONVERT_FASHION_NUM 20 // 16 channels + 4 dummy slots; 
 #define SPI_TX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) // 7 * 16 * 2 == 224 bytes
 #define SPI_RX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) //  bytes ;CONVERT_FASHION_NUM * 3(timer duration) * 100 == 5.1ms  ,using half of RX buffer to get achieve data process in line with data acquiration
 #define m_length 2
@@ -74,11 +74,11 @@ extern u16_t channel_array[16][SAMPLE_POINT_NUM * time_window];	 // 100 samples 
 
 /* for spike 4 channels raw data + raster data the sample rate is about 20khz; the value of this array will be assigned every sample bin period */
 #define SPIKE_SAMPLE_POINT_NUM 90 
-#define SPIKE_CONVERT_FASHION_NUM 19
+#define SPIKE_CONVERT_FASHION_NUM 16
 #define SPIKE_SPI_TX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM)
 #define SPIKE_SPI_RX_BUF_SIZE (SPIKE_CONVERT_FASHION_NUM * SPIKE_SAMPLE_POINT_NUM)
 
-#define MUA_BIN_SIZE 18 // must be the factor of @SPIKE_SAMPLE_POINT_NUM : ~ 1ms in 17khz sampling
+#define MUA_BIN_SIZE 18 // must be the factor of @SPIKE_SAMPLE_POINT_NUM : ~ 1ms in 20khz sampling
 
 #define SPIKE_TX_BUFFER_SIZE  SPIKE_SPI_TX_BUF_SIZE * 2
 #define SPIKE_RX_BUFFER_SIZE  SPIKE_SPI_RX_BUF_SIZE * 2
@@ -127,11 +127,11 @@ extern const u16_t NINE_DUMMPY[9];
 #define lfp_Register6 0x0086 // DAC output voltage ,there is 0
 #define lfp_Register7 0x0087 // Impedance check electrode select, this is 0
 // on-chip Amplifier bandwidth Select
-//     //  using 1K Hz upper bandwidth; use on-chip programmable resistors
-#define lfp_Register8 0x2e88
-#define lfp_Register9 0x0289
-#define lfp_Register10 0x1e8a
-#define lfp_Register11 0x038b
+//     //  using 500 Hz upper bandwidth; use on-chip programmable resistors
+#define lfp_Register8 0x1e88
+#define lfp_Register9 0x0589
+#define lfp_Register10 0x2b8a
+#define lfp_Register11 0x068b
 //     //  using 1 Hz lower bandwidth; use on-chip programmable resistors
 #define lfp_Register12 0x2c8c
 #define lfp_Register13 0x068d
@@ -147,19 +147,19 @@ extern const u16_t NINE_DUMMPY[9];
 #define spike_Register1 0x4281 // VDD sense disable ,using 16 * 20KS/s ADC
 #define spike_Register2 0x0482 // MUX bias current, configuration as above
 #define spike_Register3 0x0083 // diable tempS and digout
-// #define Register4 0x8084
-#define spike_Register4 0x9484 // absmode disable + unsigned offset binary notation ADC + weak MISO + DSP high-pass filter enable(308Hz upper bandwidth)
+// #define spike_Register4 0x8084
+#define spike_Register4 0x9384 // absmode disable + unsigned offset binary notation ADC + weak MISO + DSP high-pass filter enable(373Hz upper bandwidth at 17544 Hz)
 // Impedance check
 #define spike_Register5 0x0085 // Impedance check control ,which is disable
 #define spike_Register6 0x0086 // DAC output voltage ,there is 0
 #define spike_Register7 0x0087 // Impedance check electrode select, this is 0
 // on-chip Amplifier bandwidth Select
-#define spike_Register8 0x1688 //  using 1Hz -7.5K Hz bandwidth
+#define spike_Register8 0x2188 //  using 1Hz -5K Hz bandwidth
 #define spike_Register9 0x8089
-#define spike_Register10 0x178a
+#define spike_Register10 0x258a
 #define spike_Register11 0x808b
 #define spike_Register12 0x2c8c
-#define spike_Register13 0x868d
+#define spike_Register13 0x068d
 // indicidual Amplifier Power ,all set to one for using all channels' Amplifier
 #define spike_Register14 0xff8e
 #define spike_Register15 0xff8f
@@ -167,7 +167,7 @@ extern const u16_t NINE_DUMMPY[9];
 #define spike_Register17 0x0091
 
 /************************ spike 20khz sampling setting without DSP*******************/ 
-#define spike_raw_Register4 0x0084
+#define spike_raw_Register4 0x8084
 
 
 extern const u16_t Register_config_lfp[18];
