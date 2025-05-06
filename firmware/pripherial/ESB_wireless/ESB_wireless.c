@@ -53,7 +53,7 @@ int esb_initialize(void)
 
     // 注意： 使用ESB 模式，ACK不能附带payload，不能进行全双工的数据传输
 	config.protocol = ESB_PROTOCOL_ESB_DPL; // 设置 传输数据的protocol ,可以选择固定长度的payload length还是动态变化的长度
-	config.retransmit_delay = 1800; // 重传的时间延迟 us； 在接收端失效下，450 和600的值产生的failed tx events数量是一样的; 不能太短也不能太长
+	config.retransmit_delay = 1200; // 重传的时间延迟 us； 在接收端失效下，450 和600的值产生的failed tx events数量是一样的; 不能太短也不能太长
     /*
     * 注意： 必须要使用2mbps，否则会导致esb 占用cpu资源过多导致 休眠时间不足而功耗剧烈上升；即使1mbps 能增加稳定性
     */
@@ -91,8 +91,8 @@ int esb_initialize(void)
 	}
 
     // 这个会影响传输重发率和通信距离；在极限的设置下，目前custom board的esb通信距离在20cm左右；而且不能有障碍物；
-	esb_set_tx_power(ESB_TX_POWER_0DBM); 
-    // esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
+	// esb_set_tx_power(ESB_TX_POWER_0DBM); 
+    esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
 
     esb_set_rf_channel(84); 
 	return 0;

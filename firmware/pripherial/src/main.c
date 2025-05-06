@@ -66,6 +66,11 @@ const u16_t Register_config_lfp[18] = {lfp_Register0_enable, lfp_Register1, lfp_
                                         lfp_Register11, lfp_Register12, lfp_Register13, lfp_Register14, lfp_Register15, 
                                         lfp_Register16, lfp_Register17};
 
+const u16_t Register_config_lowpower[18] = {Register0_disable, lfp_Register1, lfp_Register2, lfp_Register3, lfp_Register4, 
+                                        lfp_Register5, lfp_Register6, lfp_Register7, lfp_Register8, lfp_Register9, lfp_Register10, 
+                                        lfp_Register11, lfp_Register12, lfp_Register13, lfp_Register14, lfp_Register15, 
+                                        lfp_Register16, lfp_Register17};
+
 const u16_t Register_config_spike[18] = {spike_Register0_enable, spike_Register1, spike_Register2, spike_Register3, spike_Register4, 
                                         spike_Register5, spike_Register6, spike_Register7, spike_Register8, spike_Register9, 
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
@@ -255,9 +260,6 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
                         k_sleep(K_SECONDS(1));
                 };
         }
-
-        LSM6DS3_set_gyro_sleep_mode(); // disable gyro
-
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
@@ -303,7 +305,7 @@ u16_t init_everything(void){
         memset(lc_data, 0, sizeof(lc_data));
         
         setup_battery_charge();
-        setup_sensor();
+        setup_sensor(); // only accel; 104Hz
         /**************** ESB init ******************/     
         err = clocks_start();
 	if (err)
@@ -388,7 +390,19 @@ u16_t init_RHD(){
         }
 
         LOG_INF("success all init");
-        // LED_hinting(500, 2);
+}
+
+u16_t low_power(void){
+        // RHD
+        nrfx_gpiote_out_task_disable(&gpiote_instance, NRFX_SPIM_SS_PIN); // 避免两个spi的冲突
+        rhdspi_init();
+        RHD_err = RHD_init(Register_config_lowpower);
+        nrfx_spim_uninit(&spi_init); // for low-power
+        nrfx_gppi_channels_disable(BIT(gp_channel_1));
+	nrfx_gppi_channels_disable(BIT(gp_channel_2));
+        // TODO LSM 没有显著功耗减低的效果;需要在初始化的时候就直接关掉，可能是spi 通讯的问题导致的，也可能是驱动的问题
+        // LSM6DS3_set_accel_power_down_mode();
+        // nrfx_spim_uninit(&lsm_spi);
 }
 
 
@@ -586,7 +600,7 @@ int dynamic_retransmit(void){
                 return -1;
         }
 
-        if(packet_timestamp - last_statistic_timestamp > 1000){ // about 50 packets
+        if((packet_timestamp - last_statistic_timestamp > 1000)){ // about 50 packets
                 if((packet_sent_counter[0] + packet_sent_counter[1] == 0)){
                         last_statistic_timestamp = packet_timestamp;
                         return -2;
@@ -598,7 +612,7 @@ int dynamic_retransmit(void){
                 if(indicate_commu < 5){
                         sample_watch_dog = 0;
                         esb_set_retransmit_count(1); // 2
-                }else if(indicate_commu < 100){
+                }else if(indicate_commu <= 100){
                         sample_watch_dog++;
                         esb_set_retransmit_count(3);
                 }
@@ -647,6 +661,13 @@ int main(void)
         */
         bool sampling = false;
         init_everything();
+        // TODO debug: 这里必须先初始化一次并开启10us的采样，不然就会导致第一次开始采样得到的数据是全0；
+        init_RHD();
+        timer_start();
+        k_sleep(K_USEC(10));
+        timer_stop(); 
+        low_power();
+        
         /****************************recording start******************************/
         /*********************main loop*********************/
 	while (1) {
@@ -655,6 +676,7 @@ int main(void)
                         /* stop sampling */
                         if(sampling){
                              timer_stop();   
+                             low_power();
                              sampling = false;
                         }
                         /* sample mode switch */
@@ -664,15 +686,13 @@ int main(void)
                         }
 
                         /* empty esb packets */
-                        for(int i=0;i<1;i++){
-                                err = empty_payload_wrap();
-                                // err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*recorded_channel_num));
-                                if(err){
-                                        esb_flush_tx();
-                                        LOG_INF("%d esb empty payload failed", err);
-                                }
+                       
+                        err = empty_payload_wrap();
+                        if(err){
+                                esb_flush_tx();
+                                LOG_INF("%d esb empty payload failed", err);
                         }
-                        k_sleep(K_MSEC(10));
+                        LED_hinting(100, 2);
 
                 }else if(!sampling){
                         /* re-configration rhd with specific sample mode */
@@ -681,9 +701,11 @@ int main(void)
                         init_RHD();
                         nrfx_gpiote_out_task_enable(&gpiote_instance, NRFX_SPIM_SS_PIN);
                         nrfx_gpiote_out_set(&gpiote_instance, NRFX_SPIM_SS_PIN); // reset the CS line to disable
-                        
+                        /* LSM */
+                        // setup_sensor();
+
                         /* begining sample */
-                        gpio_pin_set_dt(&led, 1); // clear the led
+                        // gpio_pin_set_dt(&led, 1); // clear the led
                         buffer_is_full = false;
                         sampling = true;
                         overflow_signal = !overflow_signal;
@@ -700,13 +722,14 @@ int main(void)
                                 // rf_channel = esb_rf_channel_scan(); 
                                 rf_channel = 5; // TODO selected channel: using default : 84
                                 // 保证 在下位机到中继端的时间延迟最小
-                                // LED_hinting(100, 5); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
+                                k_sleep(K_MSEC(1000));
+                                // LED_hinting(500, 3); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
                                 esb_flush_tx();
                                
                                 esb_set_retransmit_count(0);
                                 err = timestamp_payload_wrap();
                                 while(!esb_is_idle()){};
-                                // check if the command has sent success
+                                // check if the command has sent success 这里如果上位机断开，将会无线循环下去
                                 while(packet_sent_counter[1]){ // pop the newest packets
                                         // failed 
                                         packet_sent_counter[1] = 0;
@@ -720,13 +743,12 @@ int main(void)
                                         esb_set_rf_channel(rf_channel_list[advise_channel]);
                                         err = timestamp_payload_wrap();
                                         while(!esb_is_idle()){};
-                                        // k_sleep(K_MSEC(1000));
+                                        
                                 }
                                 // LED_hinting(100, 5);
 
                                 // select the esb params
                                 esb_set_retransmit_count(1);  // 2 比较稳定
-                                // esb_set_retransmit_count(1);
                                 esb_set_rf_channel(rf_channel_list[rf_channel]);
 
                         }else{ // fast mode switch

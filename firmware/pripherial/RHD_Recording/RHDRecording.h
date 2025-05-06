@@ -111,9 +111,8 @@ extern const u16_t NINE_DUMMPY[9];
 #define CALIBRATE 0x0055
 #define CLEAR 0x006A	 // not necessary to use this command
 						 // Registers configuration using write command
-
+#define Register0_disable 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
 /************************ lfp 1khz sampling setting ************************/                         
-#define lfp_Register0 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
 #define lfp_Register0_enable 0xde80 // amp fast settle is 0, enable ADC
 
 #define lfp_Register1 0x2081 // VDD sense disable ,using 16 * 1 KS/s ADC
@@ -142,7 +141,6 @@ extern const u16_t NINE_DUMMPY[9];
 #define lfp_Register17 0x0091
 
 /************************ spike 20khz sampling setting *******************/ 
-#define spike_Register0 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
 #define spike_Register0_enable 0xde80
 #define spike_Register1 0x4281 // VDD sense disable ,using 16 * 20KS/s ADC
 #define spike_Register2 0x0482 // MUX bias current, configuration as above

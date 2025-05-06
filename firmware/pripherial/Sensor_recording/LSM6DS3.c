@@ -45,7 +45,7 @@ uint8_t LSM6DS3_init(void)
   settings.accel_FIFO_enable      = 0;      // Set to include accelerometer data in FIFO buffer
   settings.accel_FIFO_decimation  = 0;      // Set to activate.
 
-  settings.gyro_enable            = 1;      // 0 - Disable. 1 - Enable
+  settings.gyro_enable            = 0;      // 0 - Disable. 1 - Enable
   settings.gyro_range             = 500;   // Angular Rate range (in deg/s).  Can be: 125, 245, 500, 1000, 2000
 	settings.gyro_samplerate        = 104;    // Hz. Select from: 13, 26, 52, 104, 208, 416, 833, 1666
 	settings.gyro_bandwidth         = 400;    // Hz. Select from: 50, 100, 200, 400;
@@ -259,7 +259,7 @@ uint8_t LSM6DS3_config(void)
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
 
   LSM6DS3_set_accel_normal_mode(settings.accel_samplerate);
-  LSM6DS3_set_gyro_active_mode();
+  // LSM6DS3_set_gyro_active_mode();
   
   uint8_t config_return = 0;
 
@@ -302,7 +302,6 @@ void LSM6DS3_set_accel_power_down_mode()
   // bit mask CTRL1_XL to avoid losing previously set parameters. Only change ODR_XL bits.
   tx_data[1] |= (0x00 << 4) | (rx_data & 0x0F);
 
-  // err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
   // APP_ERROR_CHECK(err_code);
 }
