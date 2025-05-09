@@ -198,6 +198,9 @@ int16_t lc_data[3];
 
 struct IMU_settings settings;
 
+// EN_HIZ; CEB; shipping
+bool battery_setting[2] = {0, 0}; //mode index: charge mode; shipping mode; HIZ mode(disable power);    update_flag
+
 void setup_battery_charge(void){
         twim_init(); 
         k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
@@ -210,7 +213,7 @@ void setup_battery_charge(void){
                 k_sleep(K_SECONDS(1));  
 	}
 
-        // setting
+        mp2710_read_regs(); // read all default values to driver
         mp2710_set_default_values();
         mp2710_write_regs();
 }
@@ -227,8 +230,24 @@ void get_battery_status(){
         lc_data[2] = p->PG_STAT;
 }
 
-void disconnect_battery(void){
-        mp2710_enter_shipping_mode();
+void battery_mode_switch(void){
+        // 注意：PPM 是基于电压调控的；但Vin 电压降低的时候才会进行调控
+        mp2710_t *p = &m_mp2710;
+        // charge mode
+        if(battery_setting[0] == 1){
+                p->LPM_EN = 0; // disable low power mode
+                p->CEB = 0; // enable charging
+                p->FET_DIS = 0; 
+                p->EN_HIZ = 0; 
+        }
+        // shipping mode (disconnect battery) [if Vin is online, the shipping mode will exit 80ms later]  
+        else if(battery_setting[0] == 2){
+                p->FET_DIS = 1; 
+        }
+        else if(battery_setting[0] == 3){
+                p->LPM_EN = 1;
+                p->EN_HIZ = 1; // block Vin
+        }
 }
 
 void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导致 发热问题，可能是gpio 上拉电流过大
@@ -685,8 +704,14 @@ int main(void)
                                 continue;
                         }
 
+                        /* battery set */
+                        if(battery_setting[1]){
+                                battery_setting[1] = 0;
+                                battery_mode_switch();
+                                mp2710_write_regs();
+                        }
+
                         /* empty esb packets */
-                       
                         err = empty_payload_wrap();
                         if(err){
                                 esb_flush_tx();

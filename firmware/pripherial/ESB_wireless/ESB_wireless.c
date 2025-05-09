@@ -138,14 +138,12 @@ void command_process(uint8_t length, uint16_t *data)
         }
     }
         break;
-    case 0x0003: // low-power mode: diff-level
+    case 0x0003: // charging enable
     {
-        // disable everything
-        sample_switch = false;
-        // TODO
+        battery_setting[1] = 1;
+        battery_setting[0] =  (bool)data[1];
     }
         break;
-
 
     case 0x0200: // LFP channels switch
     {
@@ -156,8 +154,6 @@ void command_process(uint8_t length, uint16_t *data)
                 recorded_channel_num++;
             }
         }
-        // RHD command acording to raw_channel to enable/disable amplifers; other do not need change
-        // TODO
     }
         break;
     case 0x0300: // behavioral event-triggered tasks (change mode): GUI & HABITS

@@ -271,18 +271,30 @@ void mp2710_read_regs(void)
 void mp2710_set_default_values(void)
 {
     mp2710_t *p = &m_mp2710;
+    // Vin parameter
+    p->VIN_MIN = 5000; // Minimal Vin voltage: 5V
+    p->LPM_EN = 1; // Enable low-power mode; only connect battery, to reduce battery consumption
 
-    p->VIN_MIN = 3880; // Minimal Vin voltage
-    p->CEB = 1; // Charge disabled
+    // Vbattery parameter
     p->VBATT_UVLO = 3030; // Battery protection voltage
     p->VBATT_REG = 4095; // Battery regulation voltage
-    p->EN_WD_DISCHG = 0; // Watchdog control in discharge mode disabled
-    p->WATCHDOG = 0; // 0:disable; 1:40s; 2:80s; 3:160s
-    p->LPM_EN = 1; // Enable low-power mode
-    p->VSYS_REG = 4200; // Ouput regulated voltage when Vin is present
     p->TESM_DGL = 1; // Enter shipping mode deglitch time. 0:1s; 1:2s; 2:4s; 3:8s
     p->TEXSM_DGL = 0; // Exit shipping mode delay time. 0:80ms; 1:2s
     p->IDSCHG = 400; // Battery to system discharge current limit
+
+    // Protection parameter
+    p->EN_WD_DISCHG = 0; // Watchdog control in discharge mode disabled
+    p->WATCHDOG = 0; // 0:disable; 1:40s; 2:80s; 3:160s
+
+    // Vsys parameter
+    p->VSYS_REG = 4200; // Ouput regulated voltage when Vin is present
+    
+    // charging parameter
+    p->CEB = 1; // Charge disabled
+    p->ICC = 8; // 8mA fast charge current：the minimum value available; which require at least 40mW power supply; ~4hours charging duration
+    p->IPRE = 1;
+    p->ITERM = 1;
+    p->CHG_TMR = 0b00000010; // 8 hours fast charge timer
 }
 
 void mp2710_enter_shipping_mode(void)
