@@ -15,6 +15,7 @@ import asyncio
 from aioserial import AioSerial
 import serial
 import time
+import datetime
 import threading
 import binascii
 import numpy as np
@@ -61,20 +62,22 @@ def get_events_data_container(): # Action potiential events & other recorded dat
         "GryoX":[],
         "GryoY":[],
         "GryoZ":[],
-
-        "RSOC":[],
         "BatteryStatus":[],
-        "BatteryTemp":[]
+        "PPM":[],
+        "PowerStatus":[],
+        "UpdateFlag":[]
         } 
     return events_data
 
 def spike_data_container(): # mode 1; raster 16 channels + 1 channel raw data
     spike_data = {
-        "AP_timestamp":[] , # raw data
-        "Electrode":[] ,
-        "Raw_data":[],
-        "Raw_channel":[],
-        "Raw_timestamp":[],
+        "AP_timestamp":[] , # raster
+        "Electrode":[] , # firing electrode
+
+        "Raw_data":[], # 20Khz data
+        "Raw_channel":[], # firing channel
+        "Raw_timestamp":[], # raw timestamp
+
         "SpikeThreshold":[],
 
         "HABITS_event_1":[],
@@ -83,6 +86,32 @@ def spike_data_container(): # mode 1; raster 16 channels + 1 channel raw data
         "MissPacketsIndex":[]
     }
     return spike_data
+
+def get_mode2_data_container(): # mode2
+    raw_data = {  # maximum 16 channels
+        "Channel_0":[],
+        "Channel_1":[],
+        "Channel_2":[], 
+        "Channel_3":[],
+        "Channel_4":[], 
+        "Channel_5":[],
+        "Channel_6":[],
+        "Channel_7":[],
+        "Channel_8":[], 
+        "Channel_9":[],
+        "Channel_10":[],
+        "Channel_11":[],
+        "Channel_12":[],
+        "Channel_13":[],
+        "Channel_14":[],
+        "Channel_15":[],
+
+        "TimeStamp":[] , # basic unit is packet
+
+        "MissPackets":0,
+        "MissPacketsIndex":[]
+        } 
+    return raw_data
 
 
 def swap16Hex(str):
@@ -210,6 +239,8 @@ def LFP_filter(data, low_cutoff="None", high_cutoff="None", fs=1000, order=4): #
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 class SerialPort(QThread):
     GUIUpdate = pyqtSignal(list)
+    EmptyGUIUpdate = pyqtSignal(list)
+    CameraGUIUpdate = pyqtSignal(list)
 
     def __init__(self ,port ,buand) -> None:
         super(SerialPort ,self).__init__()
@@ -220,8 +251,15 @@ class SerialPort(QThread):
         self.test2 = 0
         self.tiema = 0
         """ GUI system """
-        # alignment
-        self.alignment_timestamp = time.time() # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
+        # alignment 时间对齐策略： 每次记录
+        """ 
+        时间对齐策略：
+        1. 设置为每30分钟为一个block，一个block包括一个lfp，一个sensor（包括电池状态）， 一个视频文件
+        每次开始都进行一次时间对齐，更新一次alignment_timestamp
+        """
+        self.alignment_timestamp = 0 # 每次开始进行sample 时记录的开始的绝对timestamp(下位机开机以来经过的ms时间)
+        self.cali_timestamp_onset_lfp = 0
+        self.test_timestamp_present = 0
 
         self.GUIUpdateInterval = 10 # 单位为packets num , per 40 packets upadte the GUI graphs ;2000 packets one file
         self.UpdateCounter = 0
@@ -268,7 +306,7 @@ class SerialPort(QThread):
         self.DAC_resolution = 1/(int('ffff' ,16)) * 1.225 * 2 # 1.225 is the reference voltage of the series of RHD2000 (bipolar ADC)
 
         """ real-time long-term LFP or spike raw data recording mode 0"""
-        self.raw_data_per_packet_channel = 7
+        self.raw_data_per_packet_channel = 4
         self.raw_data_per_packet = self.raw_data_per_packet_channel * 16
         self.raw_data_index_base = None
         self.sensor_index = None
@@ -287,7 +325,12 @@ class SerialPort(QThread):
         self.SPIKEsensorCounter_mode2 = 0
         self.SPIKERawCounter_mode2 = 0
         self.spike_losspackets_mode2 = 0
-
+        # mode 3
+        self.Mode3RawCounter = 0
+        self.mode_3_data_buffer = ''
+        self.mode_3_timestamp_buffer = []
+        self.mode_3_buffer_counter = 0
+        self.mode_3_maxlen = 1
         # remove duplicate packets and sorting acoording to timestamp and packets_index
         self.spike_maxlen_mode2 = 10
         self.spike_buffer_counter_mode2 = 0
@@ -300,23 +343,36 @@ class SerialPort(QThread):
         
         """ File saving """
         self.lfp_file_addr = ''
+        self.mode1_file_addr = ''
+        self.mode2_file_addr = ''
         self.save_file_lfp_flag = False
+        self.save_file_mode1_flag = False
+        self.save_file_mode2_flag = False
         # LFP raw data or spike raw data
         self.raw_data = get_raw_data_container()
         # Action potiential events & other recorded data
         self.sensors_data = get_events_data_container()
         # Action potiential events data
         self.AP_data = spike_data_container()
-        
-        self.file_size = 5000 # packets; default: equal to self.GUIUpdateInterval; in 1khz LFP: it's 12s；# 这个值不能设置太大，否则会导致缓存问题
+        # Action potiential events data
+        self.AP_LFP_data = get_mode2_data_container()
+
+        self.file_duration_lfp = 1000 * 60 * 0.5 # ms
+        self.file_duration_mode1 = 30000 
+        self.file_duration_mode2 = 1000 * 60  * 0.5
+        # packets; default: equal to self.GUIUpdateInterval; in 1khz LFP: it's 12s；# 这个值不能设置太大，否则会导致缓存问题
+        self.file_size_lfp = self.file_duration_lfp // 4 # 4ms one packets 这样保证每一个文件的大小都是一样的，但对应的数据duration不一定（丢包问题）
+        self.file_size_mode1 = self.file_duration_mode1 // 4.32
+        self.file_size_mode2 = self.file_duration_mode2 // 1.44
         
         self.overflowSignal = [0, 0] # last and current
 
-        self.LFP_max_interval = 8 # the maximum interval between raw data packets: 2khz lfp: 4; 1khz: 8
+        self.LFP_max_interval = 6 # the maximum interval between raw data packets: 1khz lfp: 4
         self.Spike_max_interval = 6 # same as above but for the minimum value
+        self.mode2_max_interval = 2
 
         """ IMU & LC data recording """
-        self.sensor_update_flag = 0
+        self.sensor_update_flag = []
         self.sensor_name = list(self.sensors_data.keys())
         self.batteryStatus = 0
 
@@ -336,9 +392,9 @@ class SerialPort(QThread):
         return n
     
     def load_parameters(self):
-        with open('.\Reader_params.json', 'r') as file:
-            data = json.load(file)
-            self.alignment_timestamp = data["timestamp_ms"]
+        # with open('.\Reader_params.json', 'r') as file:
+        #     data = json.load(file)
+        #     self.alignment_timestamp = data["timestamp_ms"]
         pass
 
     def read_data(self):
@@ -398,16 +454,26 @@ class SerialPort(QThread):
                     pass
 
                 # packet proprocessing 
+                # print(packet_length)
                 """ lfp packets: mode 0 """
-                if(packets_type == 1 and packet_length == 125): #  lfp packets: mode 0
-                    self.LFPRawCounter += 1
-                    # self.UpdateCounter += 1
-                    # get timestamp + lfp channel length + overflow signal
-                    lfp_timestamp_temp = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
-                    self.lfp_timestamp_buffer.append(lfp_timestamp_temp + self.alignment_timestamp) # timestamp
+                if(packets_type == 1 and packet_length == 77): #  lfp packets: mode 0 
+                    # get timestamp
+                    lfp_timestamp_packets = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    # 当每次保存一个文件开始 的时候，对齐一次时间戳,不保存文件的时候 时间戳无所谓，因为GUI显示不关心时间戳的绝对值
+                    self.test_timestamp_present = lfp_timestamp_packets
+                    if(self.save_file_lfp_flag and self.LFPRawCounter == 0):
+                        self.alignment_timestamp = (time.time())*1000 - lfp_timestamp_packets
+                        self.cali_timestamp_onset_lfp = lfp_timestamp_packets
+                        # 开始一次video 记录和保存文件
+                        self.CameraGUIUpdate.emit([])
+                   
+                    # get timestamp + lfp channel length + overflow signal 每次都从新开始修正时间戳
+                    timestamp_calibration_value = self.timestamp_calibration(lfp_timestamp_packets - self.cali_timestamp_onset_lfp) # 只针对 每次文件开始后的这一个block的时间戳进行修正
+                    lfp_timestamp_temp = self.alignment_timestamp + lfp_timestamp_packets + timestamp_calibration_value # 这里是真实的世界的时间戳
+                    self.lfp_timestamp_buffer.append(lfp_timestamp_temp) # timestamp
                     _ = int(packets[0:2] ,16) # channel num of each packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
-                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
+                    self.sensor_update_flag.append(int(packets[17:19] ,16)) # sensor signal
                     
                     # lfp packets: 10 packets process
                     self.lfp_data_buffer += (packets[20:] + ' ')
@@ -418,22 +484,27 @@ class SerialPort(QThread):
                         self.lfp_packets_process()
                         self.lfp_buffer_counter = 0
                         self.lfp_timestamp_buffer = []
+                        self.sensor_update_flag = []
                         self.lfp_data_buffer = ''
                     # file saving
                     if(self.save_file_lfp_flag):
+                        self.LFPRawCounter += 1
                         self.save_lfp_file(self.lfp_file_addr)
+                    elif(self.LFPRawCounter > 0):
+                        self.LFPRawCounter = 0
+                        self.raw_data = get_raw_data_container()
+                        self.sensors_data = get_events_data_container()
 
                     """  spike packets: mode 1 """
                 elif(packets_type == 2 and packet_length == 108): 
-                    self.SPIKERawCounter += 1
-                    spike_timestamp_mode1_temp = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
+                    spike_timestamp_mode1_temp = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     
                     # print(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) - self.qq)
                     self.qq = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
-                    self.spike_timestamp_buffer.append(spike_timestamp_mode1_temp) # timestamp
+                    self.spike_timestamp_buffer.append(spike_timestamp_mode1_temp + self.alignment_timestamp) # timestamp
                     self.spike_channel_index_mode1 = int(packets[0:2] ,16) # channel index of current packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
-                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
+                    self.sensor_update_flag.append(int(packets[17:19] ,16)) # sensor signal
 
                     self.spike_data_buffer += (packets[20:] + ' ')
                     self.spike_buffer_counter += 1
@@ -442,27 +513,42 @@ class SerialPort(QThread):
                         self.spike_packets_process()
                         self.spike_buffer_counter = 0
                         self.spike_timestamp_buffer = []
+                        self.sensor_update_flag = []
                         self.spike_data_buffer = ''
 
-                    self.save_spike_mode1_file()
+                    # file saving
+                    if(self.save_file_mode1_flag):
+                        self.SPIKERawCounter += 1
+                        self.save_spike_mode1_file(self.mode1_file_addr)
+                    elif(self.SPIKERawCounter > 0):
+                        self.SPIKERawCounter = 0
+                        self.AP_data = spike_data_container()
+                        self.sensors_data = get_events_data_container()
                     pass
                 
                     """  spike packets: mode 2 """
                 elif(packets_type == 6 and packet_length == 13): # other sensor data: 1 packets every 6ms
                     self.SPIKEsensorCounter_mode2 += 1
-                    _ = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)) # timestamp
+                    _ = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) # timestamp
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
-                    self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
-
+                    self.sensor_update_flag.append(int(packets[17:19] ,16)) # sensor signal
+                    # sensor data proprocessing
                     self.spike_sensor_packets_process_mode2(packets[20:] + ' ') 
-
+                    # reinit
+                    self.sensor_update_flag = []
                     pass
                     
                 elif(packets_type == 5 and packet_length == 126): # spike raw data with lfp: 3 packets every 6ms
                     """ 注意，这里需要做一下包的排序，包之间的间隔过短 会出现包顺序的错乱和重复: TODO"""
-                    self.spike_buffer_counter_mode2 += 1
                     # timestamp
-                    temp_timestamp_mode2 = self.timestamp_calibration(int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16))
+                    temp_timestamp_mode2 = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    if(self.save_file_mode2_flag and self.spike_buffer_counter_mode2 == 0):
+                        self.alignment_timestamp = (time.time())*1000 - temp_timestamp_mode2
+                        self.cali_timestamp_onset_lfp = temp_timestamp_mode2
+                        # 开始一次video 记录和保存文件
+                        self.CameraGUIUpdate.emit([])
+                    timestamp_calibration_value = self.timestamp_calibration(temp_timestamp_mode2 - self.cali_timestamp_onset_lfp) # 只针对 每次文件开始后的这一个block的时间戳进行修正
+                    temp_timestamp_mode2 = self.alignment_timestamp + temp_timestamp_mode2 + timestamp_calibration_value # 这里是真实的世界的时间戳
                     # current index 
                     temp_packet_index = int(packets[0:2] ,16) # index of 3 packets list
                     # current signal
@@ -473,29 +559,48 @@ class SerialPort(QThread):
                     self.spike_raw_channel[2] = int(packets[27:29] ,16)
                     self.spike_raw_channel[3] = int(packets[25:27] ,16)
 
-                    # for test: check the send rate
-                    tiemb = time.time_ns()
-                    if(tiemb - self.tiema >= 1000 * 1000 * 1000 * 60): # 60s
-                        print("losspackets_per_sample", self.spike_losspackets_mode2/self.spike_buffer_counter_mode2, 252 * self.spike_buffer_counter_mode2 / 1000 / 60 * (120/126), "kB/s", 
-                              "error order:", self.test2/self.spike_buffer_counter_mode2) # kB/s
-                        # reinit param
-                        self.spike_buffer_counter_mode2 = 0
-                        self.spike_losspackets_mode2 = 0
-                        self.tiema = time.time_ns()
-                        self.test2 = 0
-                    if((temp_timestamp_mode2 - self.test < 0)):
-                        self.test2 += 1
-                    self.test = temp_timestamp_mode2
-
                     self.spike_FIFO_mode2.append([temp_timestamp_mode2, temp_packet_index, self.spike_raw_channel, (packets[30:] + ' ')]) # timestamp + packet_index + channel_index + raw data
                     
                     # process data
                     self.spike_raw_packets_process_mode2()
+
+                    # file saving
+                    if(self.save_file_mode2_flag):
+                        self.spike_buffer_counter_mode2 += 1
+                        self.save_spike_mode2_file(self.mode2_file_addr)
+                    elif(self.spike_buffer_counter_mode2 > 0):
+                        self.spike_buffer_counter_mode2 = 0
+                        self.AP_LFP_data = get_mode2_data_container()
+                    pass
+
+                    """  lfp + raster packets: mode 3 """
+                elif(packets_type == 7 and packet_length == 98): 
+                    spike_timestamp_mode3_temp = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    self.mode_3_timestamp_buffer.append(spike_timestamp_mode3_temp + self.alignment_timestamp) # timestamp
+                    _ = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
+                    self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
+                    self.sensor_update_flag.append(int(packets[17:19] ,16)) # sensor signal
+
+                    self.mode_3_data_buffer += (packets[20:] + ' ')
+                    self.mode_3_buffer_counter += 1
+
+                    if(self.mode_3_buffer_counter >= self.mode_3_maxlen):
+                        self.mode_3_packets_process()
+                        self.mode_3_buffer_counter = 0
+                        self.mode_3_timestamp_buffer = []
+                        self.sensor_update_flag = []
+                        self.mode_3_data_buffer = ''
                     pass
 
                     """ for timestamp alignment """
                 elif(packets_type == 4): # empty payload
-                    # print("Sdvsdfv")
+                    # battery
+                    idle_message = np.array(packets.split(' ')) # 取所有个 short
+                    # rssi 
+                    battery_a =  int(swap16Hex(idle_message[2]) ,16)
+                    battery_b = int(swap16Hex(idle_message[3]) ,16)
+                    battery_c = int(swap16Hex(idle_message[4]) ,16)
+                    self.EmptyGUIUpdate.emit([battery_a, battery_b, battery_c])
                     pass
                 elif(packets_type == 3): # timestamp payload
                     current_time = int(time.time() * 1000)
@@ -509,19 +614,54 @@ class SerialPort(QThread):
                     for bt in timestamp_message[1:5]:
                         timestamp_from_pri += (swap16Hex(bt))
                     timestamp_from_pri = int(timestamp_from_pri ,16)
-                    # 基于函数的时间误差校正
-                    self.alignment_timestamp = current_time - self.timestamp_calibration(timestamp_from_pri) # 实际的系统开机时间
+                    # # 基于函数的时间误差校正
+                    # self.alignment_timestamp = current_time - self.timestamp_calibration(timestamp_from_pri) # 实际的系统开机时间
                     
-                    print("system on:", self.alignment_timestamp)
-                    # save to file
-                    with open('Reader_params.json', 'r') as f:
-                        data = json.load(f)
-                    data["timestamp_ms"] = self.alignment_timestamp
-                    with open('Reader_params.json', 'w') as f:
-                        json.dump(data, f, indent=2)    # 保持2个缩进
+                    # print("system on:", self.alignment_timestamp)
+                    # # save to file
+                    # with open('Reader_params.json', 'r') as f:
+                    #     data = json.load(f)
+                    # data["timestamp_ms"] = self.alignment_timestamp
+                    # with open('Reader_params.json', 'w') as f:
+                    #     json.dump(data, f, indent=2)    # 保持2个缩进
                     pass
 
-          
+
+
+    def mode_3_packets_process(self):
+        # spilt
+        self.mode_3_data_buffer = np.array(self.mode_3_data_buffer.split(' '))[0:-1]
+        # print(self.mode_3_data_buffer)
+        # 1. raw data 
+        for channel_num in range(16):
+            temp_channel = self.mode_3_data_buffer[9+channel_num*5 : 9+channel_num*5+5] 
+            temp_channel_DAC = list(map(lambda x:self.DAC(swap16Hex(x), raw=False), temp_channel)) # 注意 对于 mode3 需要翻转一下
+            self.lfpdata_GUI[channel_num].extend(temp_channel_DAC) #TODO
+            
+        self.lfptimestamp_GUI.extend(self.mode_3_timestamp_buffer)
+        # 3. sensor data
+        temp_sensor_data = self.mode_3_data_buffer[self.sensor_index]
+        # sensor data
+        temp_sensor_data[0:3] = np.array(list(map(lambda x:self.LSM6DS3_accelData_in_g(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[0:3])))
+        temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
+        # LC data
+        temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
+        
+        for i in range(9):
+            temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])
+            # for GUI
+            self.sensordata_GUI[i].extend(temp_sensor)
+
+        temp_raster_data = self.mode_3_data_buffer[-5:]
+        for raster_time, spike_data in enumerate(temp_raster_data):
+            spike_data = format(self.DAC(swap16Hex(spike_data)) ,'#018b')[2:] # 保留 前16位
+            for channel_num ,spike_num in enumerate(spike_data):
+                self.spikerasterdata_GUI[15 - channel_num].append(int(spike_num))
+        pass
+
+
+
+
     def spike_sensor_packets_process_mode2(self, sensor_data):
         # spilt
         temp_sensor_data = np.array(sensor_data.split(' '))[0:-1]
@@ -540,6 +680,7 @@ class SerialPort(QThread):
                 # battery status
                 if(0 in temp_sensor): # TODO other situations
                     self.batteryStatus = 0 # normal
+        
         pass
 
     def spike_raw_packets_process_mode2(self):
@@ -582,9 +723,13 @@ class SerialPort(QThread):
                 # raw data
                 for i, channel_num in enumerate(temp_mode2[2]): # channel index: 4 channels : 30 points per packet per channel
                     self.spikedata_mode2_GUI[channel_num].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
+                    if(self.save_file_mode2_flag):
+                        self.AP_LFP_data["Channel_{}".format(channel_num)].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
             
-            # give to GUI buffer for timestamp
-            self.spiketimestamp_mode2_GUI.append(current_timestamp) # timestamp
+                # give to GUI buffer for timestamp
+                self.spiketimestamp_mode2_GUI.append(current_timestamp) # timestamp
+                if(self.save_file_mode2_flag):
+                    self.AP_LFP_data["TimeStamp"].append(current_timestamp) # timestamp
 
             # append back to fifo
             for i in range(len(non_duplicate_index) - temp_pop_times):
@@ -593,25 +738,39 @@ class SerialPort(QThread):
             if(temp_pop_times != 3):
                 # print(temp_pop_times, timestamp_temp, packetIndex_temp)
                 self.spike_losspackets_mode2 += (3 - temp_pop_times)
-            # 3. save to file TODO
+            # 3. save to file 
+            
         pass
 
     def lfp_packets_process(self):
         # spilt
         self.lfp_data_buffer = np.array(self.lfp_data_buffer.split(' '))[0:-1]
+        global_lfp_data = [[] for _ in range(16)]
        
         # 1. raw data 
         for channel_num in range(16):
             temp_channel = self.lfp_data_buffer[self.raw_data_index_base + channel_num * self.raw_data_per_packet_channel] # 注意这里要乘以7，每一个通道有7个连续的数据！！调了一整天这个bug 服了
             temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
-            # print(temp_channel_DAC)
-            # save to file
-            self.raw_data["Channel_{}".format(channel_num)].extend(temp_channel_DAC)
-            # give to GUI buffer
             self.lfpdata_GUI[channel_num].extend(temp_channel_DAC)
+            # save to file
+            if(self.save_file_lfp_flag):
+                self.raw_data["Channel_{}".format(channel_num)].extend(temp_channel_DAC)
+            # global_lfp_data[channel_num].extend(temp_channel_DAC)
+                
+        # # filter
+        # global_lfp_data_temp = np.array(global_lfp_data)
+        # column_medians = np.median(global_lfp_data_temp, axis=0)
+        # # 从每个元素中减去对应列的中位数
+        # global_lfp_data_temp = global_lfp_data_temp - column_medians[np.newaxis, :]
+        # global_lfp_data = list(global_lfp_data_temp)
+        # for channel_num in range(16):
+        #  # give to GUI buffer
+        #     self.lfpdata_GUI[channel_num].extend(global_lfp_data[channel_num])
         
         # 2. timestamp
-        self.raw_data["TimeStamp"].extend(self.lfp_timestamp_buffer)
+        if(self.save_file_lfp_flag):
+            self.raw_data["TimeStamp"].extend(self.lfp_timestamp_buffer)
+            self.sensors_data["UpdateFlag"].extend(self.sensor_update_flag)
         self.lfptimestamp_GUI.extend(self.lfp_timestamp_buffer)
             
         # 3. sensor data
@@ -627,19 +786,15 @@ class SerialPort(QThread):
             # for GUI
             self.sensordata_GUI[i].extend(temp_sensor)
             # for file
-            self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
-            if(i >= 6):
-                # battery status
-                # print(i, temp_sensor)
-                if(0 in temp_sensor): # TODO other situations
-                    self.batteryStatus = 0 # normal
+            if(self.save_file_lfp_flag):
+                self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
 
 
     def spike_packets_process(self):
         # spilt
         self.spike_data_buffer = np.array(self.spike_data_buffer.split(' '))[0:-1]
         # 1. raw data + timestamp
-        temp_channel = self.spike_data_buffer[13:-5] 
+        temp_channel = self.spike_data_buffer[9:-5] 
         temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
 
         # 2. give to GUI buffer
@@ -647,8 +802,12 @@ class SerialPort(QThread):
         self.spiketimestamp_GUI.extend(self.spike_timestamp_buffer)
         
         # 3. save to file
-        # self.AP_data["Channel_{}".format(channel_num)].extend(temp_channel_DAC)
-        # self.AP_data["TimeStamp"].extend(self.lfp_timestamp_buffer)
+        if(self.save_file_mode1_flag):
+            self.AP_data["Raw_data"].extend(temp_channel_DAC)
+            self.AP_data["Raw_timestamp"].extend(self.spike_timestamp_buffer)
+            self.AP_data["Raw_channel"].extend([self.spike_channel_index_mode1] * len(self.spike_timestamp_buffer)) 
+            if(len(temp_channel_DAC) != 90):
+                print("spike data length error", len(temp_channel_DAC))
             
         # 4. sensor data
         temp_sensor_data = self.spike_data_buffer[self.sensor_index]
@@ -662,26 +821,29 @@ class SerialPort(QThread):
             # for GUI
             self.sensordata_GUI[i].extend(temp_sensor)
             # for file
-            # self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
-            if(i == 7):
-                # battery status
-                if(0 in temp_sensor): # TODO other situations
-                    self.batteryStatus = 0 # normal
+            if(self.save_file_mode1_flag):
+                self.sensors_data[self.sensor_name[i]].extend(temp_sensor)
         
         # 5. raster data
         temp_raster_data = self.spike_data_buffer[-5:]
-        for spike_data in temp_raster_data:
+        for raster_time, spike_data in enumerate(temp_raster_data):
             spike_data = format(self.DAC(swap16Hex(spike_data)) ,'#018b')[2:] # 保留 前16位
             for channel_num ,spike_num in enumerate(spike_data):
                 self.spikerasterdata_GUI[15 - channel_num].append(int(spike_num))
+                # for file saving
+                if(int(spike_num) and self.save_file_mode1_flag):
+                    self.AP_data["AP_timestamp"].append(raster_time * 0.864 + self.spike_timestamp_buffer[0]) # 一个 raster bin 大概为0.864ms
+                    self.AP_data["Electrode"].append(15 - channel_num)
 
 
     def save_lfp_file(self, addr):
         """ save data to a file"""
+        if(self.LFPRawCounter % 500 == 0):
+            print("file preparing", round(self.LFPRawCounter/self.file_size_lfp * 100, 2) , "%", "have run ", round(self.test_timestamp_present / 1000 / 60, 2), "min")
         # the conditions of saving to a file:
         # 1. every stop events of sample
         # 2. per 2000 raw data packets
-        if(self.LFPRawCounter == self.file_size or sum(self.overflowSignal) == 1):
+        if(self.LFPRawCounter >= self.file_size_lfp): # or sum(self.overflowSignal) == 1
             self.LFPRawCounter = 0
             # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file
             timestamp_files = np.array(self.raw_data["TimeStamp"])
@@ -702,8 +864,8 @@ class SerialPort(QThread):
             """
             now_time=datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
             # TODO 后续开启一个定时线程合并这些temp 文件 ；每n小时一个文件
-            np.save(addr[0:-4] + str(now_time) + ".npy", self.raw_data, dict)
-            np.save(addr[0:-4] + str(now_time) + ".npy", self.sensors_data , dict)
+            np.save(addr[0:-4] + str(now_time) + "lfp.npy", self.raw_data, dict)
+            np.save(addr[0:-4] + str(now_time) + "sensor.npy", self.sensors_data , dict)
             
             # 3. reinit the temp array
             self.raw_data = get_raw_data_container()
@@ -716,17 +878,98 @@ class SerialPort(QThread):
                 print("sample begin!")
             self.receive_num_packet = 0
 
-    def save_spike_mode1_file(self):
+    def save_spike_mode1_file(self, addr):
+        if(self.SPIKERawCounter % 500 == 0):
+            print("file preparing",  round(self.SPIKERawCounter/self.file_size_mode1 * 100, 2) , "%")
+        """ save data to a file"""
+        # the conditions of saving to a file:
+        # 1. every stop events of sample
+        # 2. per 2000 raw data packets
+        if(self.SPIKERawCounter == self.file_size_mode1 or sum(self.overflowSignal) == 1):
+            self.SPIKERawCounter = 0
+            # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file
+            timestamp_files = np.array(self.AP_data["Raw_timestamp"])
+            timestamp_diff = np.diff(timestamp_files)
+
+            # recording the missed packets number   
+            miss_packets = np.argwhere((timestamp_diff > self.Spike_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
+            self.AP_data["MissPacketsIndex"] = miss_packets
+            # number
+            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.Spike_max_interval)
+            miss_packets_num = np.sum(miss_packets_num.flatten())
+            self.AP_data["MissPackets"] = miss_packets_num # 100000
+
+            # 2. save the file
+            """ load methods
+            data = np.load("xxx.npy", allow_pickle=True)
+            print(data.item()["TimeStamp"])...
+            """
+            now_time=datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            # TODO 后续开启一个定时线程合并这些temp 文件 ；每n小时一个文件
+            np.save(addr[0:-4] + str(now_time) + "mode1.npy", self.AP_data, dict)
+            np.save(addr[0:-4] + str(now_time) + "sensor.npy", self.sensors_data, dict)
+
+            # 3. reinit the temp array
+            self.AP_data = spike_data_container()
+            self.sensors_data = get_events_data_container()
+
+            # 4. resample detection
+            if(sum(self.overflowSignal) == 1): #  重新开始sample
+                self.sample_times += 1
+                self.overflowSignal[0] = self.overflowSignal[1]
+                print("sample begin!")
+            self.receive_num_packet = 0
+        pass
+
+    def save_spike_mode2_file(self, addr):
+        if(self.spike_buffer_counter_mode2 % 500 == 0):
+            print("file preparing", round(self.spike_buffer_counter_mode2/self.file_size_mode2 * 100, 2) , "%")
+        """ save data to a file"""
+        # the conditions of saving to a file:
+        # 1. every stop events of sample
+        # 2. per 2000 raw data packets
+        if(self.spike_buffer_counter_mode2 == self.file_size_mode2 or sum(self.overflowSignal) == 1):
+            self.spike_buffer_counter_mode2 = 0
+            # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file  
+            timestamp_files = np.array(self.AP_LFP_data["TimeStamp"])       
+            timestamp_diff = np.diff(timestamp_files)
+            # recording the missed packets number
+            miss_packets = np.argwhere((timestamp_diff > self.mode2_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
+            self.AP_LFP_data["MissPacketsIndex"] = miss_packets
+            # number
+            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.mode2_max_interval)
+            miss_packets_num = np.sum(miss_packets_num.flatten())
+            self.AP_LFP_data["MissPackets"] = miss_packets_num # 100000
+
+            # 2. save the file  
+            """ load methods
+            data = np.load("xxx.npy", allow_pickle=True)
+            print(data.item()["TimeStamp"])...
+            """
+            now_time=datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            # TODO 后续开启一个定时线程合并这些temp 文件 ；每n小时一个文件
+            np.save(addr[0:-4] + str(now_time) + "mode2.npy", self.AP_LFP_data, dict)
+
+            # 3. reinit the temp array
+            self.AP_LFP_data = get_mode2_data_container()  #TODO 注意这里没有考虑到记录的通道在一次文件保存中变化的过程；需要改成mode1的文件存储格式     
+
+            # 4. resample detection 
+            if(sum(self.overflowSignal) == 1): #  重新开始sample
+                self.sample_times += 1
+                self.overflowSignal[0] = self.overflowSignal[1]
+                print("sample begin!")
+            self.receive_num_packet = 0
         pass
 
     def GUIUpate_enable(self):
         # print(len(self.spiketimestamp_mode2_GUI))
         """ GUI update """ 
         if(len(self.lfptimestamp_GUI) >= self.GUIUpdateInterval):
-            self.GUIUpdate.emit([[0], self.lfptimestamp_GUI, self.lfpdata_GUI, self.sensordata_GUI]) # mode 0
+            self.GUIUpdate.emit([[0], self.lfptimestamp_GUI, self.lfpdata_GUI, self.sensordata_GUI, self.spikerasterdata_GUI]) # mode 0
             self.lfptimestamp_GUI = []
             self.lfpdata_GUI = [[] for _ in range(16)]
             self.sensordata_GUI = [[] for _ in range(9)]
+            self.spikerasterdata_GUI = [[] for _ in range(16)]
         elif(len(self.spiketimestamp_GUI) >= self.GUIUpdateInterval):
             self.GUIUpdate.emit([[1, self.spike_channel_index_mode1], self.spiketimestamp_GUI, self.spikedata_GUI, self.sensordata_GUI, self.spikerasterdata_GUI]) # mode 1
             self.spiketimestamp_GUI = []
@@ -738,6 +981,11 @@ class SerialPort(QThread):
             self.spiketimestamp_mode2_GUI = []
             self.sensordata_GUI= [[] for _ in range(9)]
             self.spikedata_mode2_GUI = [[] for _ in range(16)]
+        # elif(len(self.spiketimestamp_mode2_GUI) >= self.GUIUpdateInterval): 
+        #     self.GUIUpdate.emit([[2], self.spiketimestamp_mode2_GUI, self.spikedata_mode2_GUI, self.sensordata_GUI]) # mode 2
+        #     self.spiketimestamp_mode2_GUI = []
+        #     self.sensordata_GUI= [[] for _ in range(9)]
+        #     self.spikedata_mode2_GUI = [[] for _ in range(16)]
       
           
 
@@ -780,7 +1028,8 @@ class SerialPort(QThread):
 
     def timestamp_calibration(self, x, error_per_ms=30000):
         """ input: system on /ms :positive: delayed error; negative: advanced error """
-        return (x + x // error_per_ms) # 每30秒,慢1ms int value
+        return (1 * x // error_per_ms) # 每30秒,慢1ms int value
+        # return x
        
 
     def flush(self):

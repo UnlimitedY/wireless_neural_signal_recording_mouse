@@ -141,7 +141,7 @@ void command_process(uint8_t length, uint16_t *data)
     case 0x0003: // charging enable
     {
         battery_setting[1] = 1;
-        battery_setting[0] =  (bool)data[1];
+        battery_setting[0] =  (u8_t)data[1];
     }
         break;
 
@@ -286,9 +286,14 @@ int timestamp_payload_wrap(void){
     return esb_write_payload(&timestamp_payload); 
 }
 
-int empty_payload_wrap(void){
+int empty_payload_wrap(int16_t *lc_data){
     empty_payload.data[0] = 0x0400; // empty type
     empty_payload.data[1]++;		   // some information needed to upload
+    // battery
+    empty_payload.data[2] = (int16_t)*(lc_data);
+    empty_payload.data[3] = (int16_t)*(lc_data + 1);
+    empty_payload.data[4] = (int16_t)*(lc_data + 2);
+
     empty_payload.noack = 0; 
     return esb_write_payload(&empty_payload); // wirte 对应 tx ,将packet加入到tx buffer中
 }
@@ -433,4 +438,48 @@ int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data){
     tx_payload.length = txbufIndex * 2; // (4 + 6 + 3) * 2 == 26 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
 
+}
+
+int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length){
+    tx_payload.noack = 0;
+
+    u16_t txbufIndex = 0; // count the length of one tx_payload package
+    // 1. pre-head of packet
+    tx_payload.data[0] = 0x0700; 
+    // 2. package signal including: real-time timestamp; overflow_signal
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
+    tx_payload.data[3] = ((u16_t)sensor_update_flag << 8) | (u16_t)overflow_signal; 
+    txbufIndex += 4;
+
+    // 3. twi data:  6-acc or 3-acc data 
+    for (int i = 0; i < 6; i++)
+    {
+        tx_payload.data[txbufIndex + i] = (int16_t)*(imu_data + i);
+    }
+    txbufIndex += 6;
+
+    // 4. BatterPower data: fixed 3 u16_t
+    for (int i = 0; i < 3; i++)
+    {
+        tx_payload.data[txbufIndex + i] = (int16_t)*(lc_data + i);
+    }
+    txbufIndex += 3;
+
+    // 5. lfp raw data 1 channel length: 105
+    for (int i = 0; i < lfp_raw_length; i++)
+    { 
+        tx_payload.data[txbufIndex + i] = (u16_t)*(lfp_Raw_data + i);
+    }
+    txbufIndex += lfp_raw_length;
+    
+    // 6. spike raster data 4 shorts
+    for (int i = 0; i < 5; i++)
+    { 
+        tx_payload.data[txbufIndex + i] = (u16_t)*(Spike_raster_data + i);
+    }
+    txbufIndex += 5;
+
+    tx_payload.length = txbufIndex * 2; //  16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 5 (raster, 1 ms per short) == 98
+    return esb_write_payload(&tx_payload); 
 }

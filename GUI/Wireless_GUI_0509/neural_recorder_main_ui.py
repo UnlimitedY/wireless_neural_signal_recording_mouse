@@ -6,7 +6,10 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QMessageBox, QLineEdit, QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QPalette, QColor, QFont, QIcon
+from PyQt6.QtGui import QPalette, QColor, QFont, QIcon, QImage, QPixmap
+import cv2
+import os
+from camera_module import CameraModule
 
 class SerialConnectionDialog(QDialog):
     connection_established = pyqtSignal(str) # Signal to emit when connection is made
@@ -109,7 +112,7 @@ class SerialConnectionDialog(QDialog):
 
     def attempt_disconnection(self):
         if self.selected_port:
-            print(f"断开与 {self.selected_port} 的连接...")
+            print(f"disconnect {self.selected_port} ...")
             # In a real app, you'd close the serial connection here
             self.selected_port = None
             if hasattr(self, 'connect_button'):
@@ -215,7 +218,7 @@ class BaseDisplayTab(QWidget):
             
     def start_save(self):
         """开始保存数据"""
-        if hasattr(self, 'file_path_label') and self.file_path_label.text() != "File path don't selected":
+        if hasattr(self, 'file_path_label'): # and self.file_path_label.text() != "File path don't selected"
             self.start_save_button.setEnabled(False)
             self.stop_save_button.setEnabled(True)
             print(f"开始保存数据到 {self.file_path_label.text()}")
@@ -261,13 +264,13 @@ class LfpTab(BaseDisplayTab):
         # 滤波器设置
         button_layout.addWidget(QLabel("Low cutoff:"))
         self.low_cutoff = QComboBox()
-        self.low_cutoff.addItems(["0.5", "4", "8", "13", "30", "None"])
+        self.low_cutoff.addItems(["0.5", "4", "8", "13", "30", "50", "100", "150",  "250", "300", "None"])
         self.low_cutoff.setMaximumWidth(80)
         button_layout.addWidget(self.low_cutoff)
         
         button_layout.addWidget(QLabel("High cutoff:"))
         self.high_cutoff = QComboBox()
-        self.high_cutoff.addItems(["4", "8", "13", "30", "None"])
+        self.high_cutoff.addItems(["4", "8", "13", "30","50" ,"100", "150", "250",  "300", "None"])
         self.high_cutoff.setMaximumWidth(80)
         button_layout.addWidget(self.high_cutoff)
         
@@ -342,22 +345,6 @@ class Spike4ChTab(BaseDisplayTab):
         button_layout.addWidget(self.send_channels_button)
         
         self.control_panel_layout.addLayout(button_layout, 1, 0, 1, 4)
-        
-    def select_file(self):
-        # 这里应该使用QFileDialog来选择文件
-        file_path = "C:/Data/spike4ch_recording.dat"  # 模拟选择的文件路径
-        self.file_path_label.setText(file_path)
-        print(f"选择文件保存路径: {file_path}")
-        
-    def start_save(self):
-        print(f"开始保存文件: {self.file_path_label.text()}")
-        self.start_save_button.setEnabled(False)
-        self.stop_save_button.setEnabled(True)
-        
-    def stop_save(self):
-        print("停止保存文件")
-        self.start_save_button.setEnabled(True)
-        self.stop_save_button.setEnabled(False)
         
     def send_channels(self):
         selected_channels = [combo.currentText() for combo in self.channel_combos]
@@ -452,6 +439,47 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(10)
 
+        # 初始化摄像头相关属性
+        self.is_camera_on = False
+        self.is_recording = False
+
+        self.video_save_path = None
+        self.camera_module = CameraModule()  # 实例化CameraModule
+        self.camera_timer = QTimer()  # 添加定时器用于更新摄像头画面
+        self.camera_timer.timeout.connect(self.update_camera_frame)
+
+        # 添加摄像头控制按钮
+        camera_control_bar = QFrame()
+        camera_control_bar.setFrameShape(QFrame.Shape.StyledPanel)
+        camera_control_bar.setStyleSheet("QFrame { border-radius: 8px; background-color: #F0F0F0; }")
+        camera_control_layout = QHBoxLayout(camera_control_bar)
+        camera_control_layout.setContentsMargins(10, 5, 10, 5)
+        camera_control_layout.setSpacing(8)
+        
+        self.camera_label = QLabel("camera:")
+        camera_control_layout.addWidget(self.camera_label)
+        
+        self.toggle_camera_button = QPushButton("Open camera")
+        self.toggle_camera_button.setMinimumHeight(35)
+        self.toggle_camera_button.clicked.connect(self.toggle_camera)
+        camera_control_layout.addWidget(self.toggle_camera_button)
+        
+        self.toggle_recording_button = QPushButton("Start recording")
+        self.toggle_recording_button.setMinimumHeight(35)
+        self.toggle_recording_button.setEnabled(False)
+        self.toggle_recording_button.clicked.connect(self.toggle_recording)
+        camera_control_layout.addWidget(self.toggle_recording_button)
+        
+        self.select_save_path_button = QPushButton("Choice save path")
+        self.select_save_path_button.setMinimumHeight(35)
+        self.select_save_path_button.clicked.connect(self.select_video_save_path)
+        camera_control_layout.addWidget(self.select_save_path_button)
+        
+        self.save_path_label = QLabel("File path don't selected")
+        camera_control_layout.addWidget(self.save_path_label, 1)
+        
+        main_layout.addWidget(camera_control_bar)
+
         # Top Control Bar
         control_bar_widget = QWidget()
         control_bar_layout = QHBoxLayout(control_bar_widget)
@@ -482,7 +510,7 @@ class MainWindow(QMainWindow):
         
         self.stop_sampling_button = QPushButton("Sample Stop")
         self.stop_sampling_button.setMinimumHeight(35)
-        self.stop_sampling_button.setEnabled(False)
+        # self.stop_sampling_button.setEnabled(False)
         self.stop_sampling_button.clicked.connect(self.stop_sampling)
         control_group_layout.addWidget(self.stop_sampling_button)
         
@@ -521,6 +549,19 @@ class MainWindow(QMainWindow):
         self.packet_loss_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.packet_loss_indicator.setStyleSheet("background-color: #66BB6A; color: black; border-radius: 4px; padding: 5px;")
         status_group_layout.addWidget(self.packet_loss_indicator)
+        
+        # 在状态指示器组中添加RF power控制按钮
+        # 大约在第530行，在packet_loss_indicator之后添加
+        
+        # RF power开启按钮
+        self.rf_power_on_button = QPushButton("RF Power ON")
+        # self.rf_power_on_button.clicked.connect(self.rf_power_on)
+        status_group_layout.addWidget(self.rf_power_on_button)
+        
+        # RF power关闭按钮
+        self.rf_power_off_button = QPushButton("RF Power OFF")
+        # self.rf_power_off_button.clicked.connect(self.rf_power_off)
+        status_group_layout.addWidget(self.rf_power_off_button)
         
         control_bar_layout.addWidget(status_group)
         
@@ -566,16 +607,16 @@ class MainWindow(QMainWindow):
     def start_sampling(self):
         """开始采样"""
         print("Sample begaining...")
-        self.start_sampling_button.setEnabled(False)
-        self.stop_sampling_button.setEnabled(True)
+        # self.start_sampling_button.setEnabled(False)
+        # self.stop_sampling_button.setEnabled(True)
         
         self.statusBar().showMessage(f"Sampling")
     
     def stop_sampling(self):
         """停止采样"""
         print("Stop sampling...")
-        self.start_sampling_button.setEnabled(True)
-        self.stop_sampling_button.setEnabled(False)
+        # self.start_sampling_button.setEnabled(True)
+        # self.stop_sampling_button.setEnabled(False)
         self.statusBar().showMessage("Sample stop")
     
     
@@ -637,8 +678,8 @@ class MainWindow(QMainWindow):
         """窗口关闭事件"""
         reply = QMessageBox.question(
             self, 
-            'Are you sure you want to quit?',
-            'Check neural recorder have been Stopped', 
+            'check quit', 
+            'Are you sure to quit?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
             QMessageBox.StandardButton.No
         )
@@ -650,3 +691,107 @@ class MainWindow(QMainWindow):
                 event.accept()
         else:
             event.ignore()
+
+
+    def toggle_camera(self):
+        """切换摄像头开关状态"""
+        if not self.is_camera_on:
+            # 打开摄像头
+            if self.camera_module.open_camera():
+                self.is_camera_on = True
+                self.toggle_camera_button.setText("Close camera")
+                self.toggle_recording_button.setEnabled(True)
+                
+                # 创建摄像头显示标签（如果尚未创建）
+                if not hasattr(self, 'camera_display'):
+                    self.camera_display = QLabel("Camera not opened")
+                    self.camera_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.camera_display.setStyleSheet("background-color: black; color: white;")
+                    self.camera_display.setMinimumHeight(240)
+                    self.camera_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+                
+                # 确保摄像头显示组件可见
+                self.camera_display.setVisible(True)
+                
+                # 获取主布局
+                main_layout = self.central_widget.layout()
+                
+                # 检查摄像头显示是否已经在布局中
+                found = False
+                for i in range(main_layout.count()):
+                    if main_layout.itemAt(i).widget() == self.camera_display:
+                        found = True
+                        break
+                
+                # 如果不在布局中，则添加到布局
+                if not found:
+                    # 在控制栏下方插入摄像头显示
+                    main_layout.insertWidget(2, self.camera_display)
+                
+                # 启动定时器更新摄像头画面
+                self.camera_timer.start(16)  # 约30fps，提高更新频率
+            else:
+                QMessageBox.warning(self, "Error", "Cannot open camera")
+        else:
+            # 关闭摄像头
+            self.camera_timer.stop()
+            self.camera_module.close_camera()
+            self.is_camera_on = False
+            self.toggle_camera_button.setText("Open camera")
+            self.toggle_recording_button.setEnabled(False)
+            if self.is_recording:
+                self.toggle_recording()
+            
+            # 从布局中移除摄像头显示
+            if hasattr(self, 'camera_display'):
+                main_layout = self.central_widget.layout()
+                if isinstance(main_layout, QVBoxLayout):
+                    main_layout.removeWidget(self.camera_display)
+                    self.camera_display.setVisible(False)
+        
+    def update_camera_frame(self):
+        """更新摄像头画面"""
+        if hasattr(self, 'camera_display') and self.camera_display:
+            frame = self.camera_module.get_frame()
+            if frame is not None:
+                # 转换OpenCV图像为Qt图像
+                rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+                self.camera_display.setPixmap(QPixmap.fromImage(qt_image))
+        
+    def toggle_recording(self):
+        """切换录制状态"""
+        if not self.is_recording:
+            # 开始录制
+            if self.camera_module.start_recording(self.video_save_path):
+                self.is_recording = True
+                self.toggle_recording_button.setText("Stop recording")
+                self.select_save_path_button.setEnabled(False)
+        else:
+            # 停止录制
+            if self.camera_module.stop_recording():
+                self.is_recording = False
+                self.toggle_recording_button.setText("Start recording")
+                self.select_save_path_button.setEnabled(True)
+        
+    def select_video_save_path(self):
+        """选择视频保存路径"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save video file", "", "AVI file (*.avi);;All files (*)"
+        )
+        if file_path:
+            self.video_save_path = file_path
+            self.save_path_label.setText(file_path)
+    
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        """窗口关闭事件"""
+        # 确保关闭摄像头
+        if self.is_camera_on:
+            self.camera_timer.stop()
+            self.camera_module.close_camera()
+        
+        # 调用原有的关闭事件处理
+        super().closeEvent(event)

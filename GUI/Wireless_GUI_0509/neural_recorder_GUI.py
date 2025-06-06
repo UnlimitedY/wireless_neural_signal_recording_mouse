@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout,
 from PyQt6.QtGui import QFont
 
 from neural_reader import SerialPort ,my_gaussian_filter1d, LFP_filter
+from RFPowerControl import serialPowerControl
 import warnings
 
 import neural_recorder_main_ui as UI
@@ -54,6 +55,8 @@ class ESBMainWindow(UI.MainWindow):
         self.t1 = None
         self.curr_active_ports = None
         self.pen1 = pg.mkPen(color=(255, 0, 0))
+        # power control
+        self.RFpowerSerial = None
         ## sample rate
         self.lfp_sample_rate = 1000 # 1khz default
         self.spike_sample_rate = 20833 # 20khz default
@@ -89,10 +92,10 @@ class ESBMainWindow(UI.MainWindow):
         self.spike_raw_channel = 0 # raw data display channel
 
         ################# LFP raw data mode 0 
-        self.separate_interval = 1000 
+        self.separate_interval = 500# 500 
         self.ring_lfp_pointer = 0
         self.LFP_x = np.arange(0, self.lfp_display_data_num, 1)
-        self.LFP_raw_data =np.full((self.spike_channel_num ,self.lfp_display_data_num) ,np.nan)
+        self.LFP_raw_data =np.full((self.spike_channel_num ,self.lfp_display_data_num) ,np.nan) 
         self.lfpmisspackets = 0 # recording the number of missed packets every GUI update events
         self.lfpaccumulpackets = 0 # recording received packets number
 
@@ -100,7 +103,7 @@ class ESBMainWindow(UI.MainWindow):
         self.lfp_filter_buffer = np.full((self.spike_channel_num ,self.lfp_filter_length) ,np.nan)
 
         ################# spike mode 2 
-        self.separate_interval_spike = 1000
+        self.separate_interval_spike = 500
         self.spike_mode2_curr_channel = [0 for _ in range(16)]
         self.ring_spike_mode2_pointer = 0
         self.spike_mode2_x = np.arange(0, self.spike_display_data_num, 1)
@@ -244,8 +247,8 @@ class ESBMainWindow(UI.MainWindow):
         self.LFP_pI_channel.getAxis("left").setTicks([lfp_ticks.items()])
 
         self.LFP_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
-        self.LFP_v1_channel.setLimits(xMin=0, xMax=self.lfp_display_data_num, yMin=-self.separate_interval, yMax=self.spike_channel_num * self.separate_interval)
-        self.LFP_v1_channel.setYRange(1 ,self.spike_channel_num * self.separate_interval) 
+        self.LFP_v1_channel.setLimits(xMin=0, xMax=self.lfp_display_data_num, yMin=-self.separate_interval , yMax=(self.spike_channel_num + 1) * self.separate_interval)
+        self.LFP_v1_channel.setYRange(-self.separate_interval ,(self.spike_channel_num + 1) * self.separate_interval) 
         self.LFP_v1_channel.setXRange(0 ,self.lfp_display_data_num)
 
         """ 4 channel AP data spike mode 2"""
@@ -280,8 +283,8 @@ class ESBMainWindow(UI.MainWindow):
         }
         self.AP_pI_channel.getAxis("left").setTicks([spike_mode2_ticks.items()])
 
-        self.AP_v1_channel.setLimits(xMin=0, xMax=self.spike_display_data_num, yMin=-self.separate_interval_spike, yMax=self.spike_channel_num * self.separate_interval_spike)
-        self.AP_v1_channel.setYRange(1 ,self.spike_channel_num * self.separate_interval_spike) 
+        self.AP_v1_channel.setLimits(xMin=0, xMax=self.spike_display_data_num, yMin=-self.separate_interval_spike, yMax=(self.spike_channel_num + 1) * self.separate_interval_spike)
+        self.AP_v1_channel.setYRange(-self.separate_interval_spike ,(self.spike_channel_num + 1) * self.separate_interval_spike) 
         self.AP_v1_channel.setXRange(0 ,self.spike_display_data_num)
         
         """ other sensors graph """
@@ -324,6 +327,9 @@ class ESBMainWindow(UI.MainWindow):
         """ callback function """
         self.lfp_tab.start_save_button.clicked.connect(self.start_save_lfp)
         self.lfp_tab.stop_save_button.clicked.connect(self.stop_save_lfp)
+        self.spike4ch_tab.start_save_button.clicked.connect(self.start_save_mode2)
+        self.spike4ch_tab.stop_save_button.clicked.connect(self.stop_save_mode2)
+
         self.start_sampling_button.clicked.connect(self.sample_start)
         self.stop_sampling_button.clicked.connect(self.sample_stop)
         self.sampling_mode_combo.currentIndexChanged.connect(self.sample_mode_switch)
@@ -335,6 +341,9 @@ class ESBMainWindow(UI.MainWindow):
         self.update_battery_button.clicked.connect(self.battery_mode_setting)
         # self.lfp_tab.enable_filter_button.clicked.connect(self.lfp_filter_on)
         # self.lfp_tab.disable_filter_button.clicked.connect(self.lfp_filter_off)
+
+        self.rf_power_on_button.clicked.connect(self.rf_power_on)
+        self.rf_power_off_button.clicked.connect(self.rf_power_off)
         
     # data update function
     def update_plot_data(self, data):  # 注意：实际的一次更新得到的包的数量是在浮动的根据线程处理的速度
@@ -352,6 +361,20 @@ class ESBMainWindow(UI.MainWindow):
                 # update data
                 for i in range(16): # diff color diff channels separate_interval
                     self.LFP_raw_channel[i].setData(self.LFP_x, self.LFP_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+
+                 #### raster data update
+                # update infinited line
+                self.spike_raster_updating_indicater_mode_1.setPos(self.ring_spike_raster_pointer)
+                # update data
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    for i in range(16): # diff color diff channels separate_interval
+                        self.spike_raster_data[i][self.spike_raster_data[i] == 0] = -1
+                        self.spike_raster_channel[i].setData(self.spike_raster_x, self.spike_raster_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+                # update spike rate data
+                self.spike_raster_data[self.spike_raster_data == -1] = 0
+                self.SR_value[0] = my_gaussian_filter1d(np.sum(self.spike_raster_data ,axis=0) ,sigma=10)
+                self.spike_SR_channel.setData(self.spike_raster_x ,self.SR_value[0]  ,pen=pg.mkPen({'color': 'w' ,'width':2}))  # ,fillLevel=10, fillBrush=(255,255,255,30)
             
             elif(int(data[0][0]) == 1):
                 """ spike data mode 1 """ 
@@ -445,6 +468,8 @@ class ESBMainWindow(UI.MainWindow):
                 """ LFP raw data figure 1"""
                 lfp_timestamp = np.array(data[1])
                 raw_data = np.array(data[2])
+                spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
+
                 # statitic dropped packets
                 temp_loss = np.diff(lfp_timestamp) 
                 temp_loss = temp_loss[(temp_loss > self.mSerial.LFP_max_interval) | (temp_loss <= 0)]
@@ -453,7 +478,7 @@ class ESBMainWindow(UI.MainWindow):
                 self.lfpaccumulpackets += len(lfp_timestamp)
 
                 # 每save file 10次就重新统计丢失的包的数量
-                if(self.lfpaccumulpackets >= (self.mSerial.file_size) * 10):
+                if(self.lfpaccumulpackets >= (self.mSerial.file_size_lfp) * 10):
                     self.lfpaccumulpackets = 0
                     self.lfpmisspackets = 0
 
@@ -480,6 +505,23 @@ class ESBMainWindow(UI.MainWindow):
                     for channel_num in range(16):
                         self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] = LFP_filter(self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] - channel_num * self.separate_interval, 
                                                                                              self.lfp_tab.low_cutoff.currentText(), self.lfp_tab.high_cutoff.currentText()) + channel_num * self.separate_interval
+                
+
+                 # update raster data
+                endpoint = self.ring_spike_raster_pointer + len(spike_raster_data_mode_1[0])
+                if(endpoint > self.spike_raster_display_data_num):
+                    temp_onset = endpoint - self.spike_raster_display_data_num
+                    for channel_num in range(16):
+                        temp_vdd = spike_raster_data_mode_1[channel_num] * (channel_num) # separate value
+                        self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:] = temp_vdd[0:-temp_onset]
+                        
+                        self.spike_raster_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                    self.ring_spike_raster_pointer = temp_onset
+                else:
+                    for channel_num in range(16):
+                        self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:endpoint] = spike_raster_data_mode_1[channel_num] * (channel_num)
+                    self.ring_spike_raster_pointer = endpoint # update indicater
+        
 
             
             elif(int(data[0][0]) == 1):
@@ -497,7 +539,7 @@ class ESBMainWindow(UI.MainWindow):
                 self.spikemisspackets_mode_1 +=  loss_packets_value
                 self.spikeaccumulpackets_mode_1 += len(spike_timestamp_mode_1)
                 # 每save file一次就重新统计丢失的包的数量
-                if(self.spikeaccumulpackets_mode_1 >= self.mSerial.file_size * 10):
+                if(self.spikeaccumulpackets_mode_1 >= self.mSerial.file_size_mode1 * 10):
                     self.spikeaccumulpackets_mode_1 = 0
                     self.spikemisspackets_mode_1 = 0
                 
@@ -544,7 +586,7 @@ class ESBMainWindow(UI.MainWindow):
                 self.spike_mode2_accumulpackets += len(spike_timestamp)
 
                 # 每save file一次就重新统计丢失的包的数量
-                if(self.spike_mode2_accumulpackets >= self.mSerial.file_size * 10):
+                if(self.spike_mode2_accumulpackets >= self.mSerial.file_size_mode2 * 10):
                     self.spike_mode2_accumulpackets = 0
                     self.spike_moide2_misspackets = 0
 
@@ -558,14 +600,14 @@ class ESBMainWindow(UI.MainWindow):
                     temp_onset = endpoint - self.spike_display_data_num
                     for channel_num in range(16):
                         if(self.spike_mode2_curr_channel[channel_num] != 0):
-                            temp_vdd = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval
+                            temp_vdd = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
                             self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:] = temp_vdd[0:-temp_onset]
                             self.spike_mode2_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
                     self.ring_spike_mode2_pointer = temp_onset
                 else:
                     for channel_num in range(16):
                         if(self.spike_mode2_curr_channel[channel_num] == max(self.spike_mode2_curr_channel)):
-                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:endpoint] = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval
+                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:endpoint] = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
                     self.ring_spike_mode2_pointer = endpoint # update indicater
                 pass
 
@@ -616,24 +658,91 @@ class ESBMainWindow(UI.MainWindow):
             self.mSerial.load_parameters() # 加载保存的参数，例如 当前系统的时间戳
             self.mSerial.port_open()
             self.mSerial.GUIUpdate.connect(self.update_plot_data)
+            self.mSerial.EmptyGUIUpdate.connect(self.update_idle_status)
+            self.mSerial.CameraGUIUpdate.connect(self.update_carmera_status)
             self.mSerial.start()
+            # power control
+            self.RFpowerSerial = serialPowerControl()
+            time.sleep(0.1)
+            self.rf_power_status_update()
         except:
             print(sys.exc_info())
             QMessageBox.warning(self, "Warning", "Serial Port open failed")
             pass
     
+    def update_carmera_status(self, status):
+        pass
+        # 如果摄像头处于记录状态就保存一次文文件
+        # if(self.toggle_recording_button.text() == "Stop recording"):
+        #     self.toggle_recording()
+        # 检查是否摄像头已经打开，否则打开摄像头
+        # if(self.toggle_camera_button.text() == "Open camera"):
+        #     self.toggle_camera()
+        # 开始记录video
+        # self.toggle_recording()
+
+    def rf_power_on(self):
+        self.RFpowerSerial.open()
+        self.rf_power_status_update()
+        
+    def rf_power_off(self):
+        self.RFpowerSerial.close()
+        self.rf_power_status_update()
+
+    def rf_power_status_update(self):
+        self.RFpowerSerial.read_status()
+        if(int(self.RFpowerSerial.status) == 2): # open
+            self.rf_power_on_button.setStyleSheet(f"background-color: #66BB6A;")
+            self.rf_power_off_button.setStyleSheet(f"background-color: #ffffff;")
+        elif(int(self.RFpowerSerial.status) == 1): # close
+            self.rf_power_off_button.setStyleSheet(f"background-color: #FF5252;")
+            self.rf_power_on_button.setStyleSheet(f"background-color: #ffffff;")
+            
+            
+       
+
+    def update_idle_status(self, status):
+        self.CHG = status[0]
+        self.PPM = status[1]
+        self.PG = status[2]
+        self.update_battery_indicator(self.CHG, self.PPM, self.PG)
+    
     def start_save_lfp(self):
         self.mSerial.save_file_lfp_flag = True
         self.mSerial.lfp_file_addr = self.lfp_tab.file_path_label.text()
+        # mode1
+        self.mSerial.save_file_mode1_flag = True
+        self.mSerial.mode1_file_addr = self.lfp_tab.file_path_label.text()
     
     def stop_save_lfp(self):
         self.mSerial.save_file_lfp_flag = False
         self.mSerial.lfp_file_addr = ""
+        # mode1
+        self.mSerial.save_file_mode1_flag = False
+        self.mSerial.mode1_file_addr = ""
+
+    # def start_save_mode1(self):
+    #     self.mSerial.save_file_mode1_flag = True
+    #     self.mSerial.mode1_file_addr = self.lfp_tab.file_path_label.text() # TODO 这里需要修改,使用独立的按钮来选择mode1的保存路径
+
+    # def stop_save_mode1(self):
+    #     self.mSerial.save_file_mode1_flag = False
+    #     self.mSerial.mode1_file_addr = ""
+
+    def start_save_mode2(self):
+        self.mSerial.save_file_mode2_flag = True
+        self.mSerial.mode2_file_addr = self.spike4ch_tab.file_path_label.text() 
+
+    def stop_save_mode2(self):
+        self.mSerial.save_file_mode2_flag = False
+        self.mSerial.mode2_file_addr = ""
 
     def sample_start(self):
         self.mSerial.flush()
-        self.open_command = [0x01 ,0x00] 
-        self.mSerial.send_data(self.open_command)
+        for i in range(1):    
+            self.open_command = [0x01 ,0x00] 
+            self.mSerial.send_data(self.open_command)
+            time.sleep(0.1)
 
     def sample_stop(self):
         self.close_command = [0x02 ,0x00] # invalid sample mode
@@ -718,9 +827,9 @@ class ESBMainWindow(UI.MainWindow):
     
     def battery_mode_setting(self):
         self.MP2710_command = [0x03, 0x00 ,  0x00 ,0x00] 
-        print("Afadvda")
         # battery_mode
         self.MP2710_command[-2] = int(hex(self.battery_status_combo.currentIndex() + 1) ,16)
+        print(self.MP2710_command)
         self.err = self.mSerial.send_data(self.MP2710_command)
 
     # def lfp_filter_on(self):

@@ -41,7 +41,7 @@ extern bool sensor_update_flag; // flag of the sensor data is updated
 
 extern u16_t threshold_list[16];
 
-extern bool battery_setting[2];
+extern u8_t battery_setting[2];
 
 #define rf_channel_num 6
 extern uint8_t rf_channel_list[rf_channel_num]; // list of channels
@@ -95,7 +95,7 @@ void command_process(uint8_t length, uint16_t *data); // command process & behav
 // timestamp_payload wrap function: every sample onset
 int timestamp_payload_wrap(void);
 // empty_payload wrap function: when sample stopping
-int empty_payload_wrap(void);
+int empty_payload_wrap(int16_t *lc_data);
 // tx_payload wrap function: when sample working mode 0
 int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t raw_length);
 // tx_payload wrap function: when sample working: mode 1
@@ -103,5 +103,8 @@ int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16
 // mode 2
 int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u8_t *packet_index, u8_t counter);
 int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data);
+// mode 3
+// tx_payload wrap function: when sample working: mode 1
+int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length);
 
 #endif

@@ -6,7 +6,7 @@
     1. RHD initiation
     2. RHD Recording
 */
-
+#include <stdint.h>
 // nrfx library
 #include <nrfx.h>
 #include <nrfx_timer.h>
@@ -27,6 +27,7 @@ typedef unsigned int u32_t;
 
 #define GPIOE_INST NRF_DT_GPIOTE_INST(DT_NODELABEL(led0), gpios) // 获得 gpio0 这个实例
 // macro define
+#define NUM_CHANNELS 16      // Number of neural signal channels
 // fortest
 #define TEST_CHANNEL 16 
 
@@ -48,9 +49,10 @@ typedef unsigned int u32_t;
 
 #define time_window 1 // each time_window has 100 samples every channel;using the parameter to reduce time resolution and increase the limitation of wireless communication time.
 
+/*********************************** mode 0 ************************************/
 /* for LFP 16 channels raw data */
 // 19 commands as one command packet; the bin size is 100 samples every channel
-#define SAMPLE_POINT_NUM 7
+#define SAMPLE_POINT_NUM 4 
 #define CONVERT_FASHION_NUM 20 // 16 channels + 4 dummy slots; 
 #define SPI_TX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) // 7 * 16 * 2 == 224 bytes
 #define SPI_RX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) //  bytes ;CONVERT_FASHION_NUM * 3(timer duration) * 100 == 5.1ms  ,using half of RX buffer to get achieve data process in line with data acquiration
@@ -72,6 +74,7 @@ extern u16_t m_rx_buf[2][LFP_RX_BUFFER_SIZE]; /*< RX buffer. double buffer >*/
 extern u16_t channel_array_t[SAMPLE_POINT_NUM * time_window];
 extern u16_t channel_array[16][SAMPLE_POINT_NUM * time_window];	 // 100 samples every channel; this data array will generate raw data packet of singe channel and the MutiUnitActivityu.
 
+/*********************************** mode 1&2 ************************************/
 /* for spike 4 channels raw data + raster data the sample rate is about 20khz; the value of this array will be assigned every sample bin period */
 #define SPIKE_SAMPLE_POINT_NUM 90 
 #define SPIKE_CONVERT_FASHION_NUM 16
@@ -95,6 +98,26 @@ extern u16_t spike_channel_array[16][SPIKE_SAMPLE_POINT_NUM];
 
 extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE)]; // 21 sample each MUA bin. 105 sample is equal to 5 bins and 16 channels correspond to 5 shorts ,given that 1bit/sample
 
+/*********************************** mode 3 ************************************/
+// 2025.6.4：增加 mode3，只做所有通道的spike detection，根据之间的研究结果，使用10Khz的采样对detection的影响很小【ref】；
+// 使用mode1 来更新threshold； mode3常开来同时获得 lfp 和 spike events
+// 使用 双向4阶 IIR 分离出300Hz以内的信号并下采样到1Khz之后上传到 host；
+// 使用 2阶 IIR 滤波器分离出300Hz 以上的信号并进行online spike detection，压缩为MUA 上传到host
+// 该模式只使用3-axis IMU数据，功耗期望控制在30-40 mW左右
+// 一个包：16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 3 (IMU) + 3 (battery) + 5 (raster, 1 ms per short)  [~5 ms] [10 points per raster bin: ~1ms]
+#define CHUNK_SIZE  50 // 5ms chunks 
+#define MODE_3_LFP_SIZE 80 // 5 * 16 == 80
+#define MODE_3_SPI_TX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
+#define MODE_3_SPI_RX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
+
+#define MODE_3_TX_BUFFER_SIZE  MODE_3_SPI_TX_BUF_SIZE * 2
+#define MODE_3_RX_BUFFER_SIZE  MODE_3_SPI_RX_BUF_SIZE * 2
+
+extern u16_t mode_3_m_tx_buf[MODE_3_TX_BUFFER_SIZE]; // ppi convert command; /**< TX buffer. */
+extern u16_t mode_3_m_rx_buf[2][MODE_3_RX_BUFFER_SIZE]; /*< RX buffer. double buffer >*/
+
+extern u16_t mode_3_array_t[MODE_3_SPI_RX_BUF_SIZE];
+extern u16_t mode_3_array_lfp_t[MODE_3_LFP_SIZE]; // 5 * 16 == 90
 
 /*************spi init***************/
 extern const nrfx_spim_t spi; /**< SPI instance. */
@@ -126,11 +149,11 @@ extern const u16_t NINE_DUMMPY[9];
 #define lfp_Register6 0x0086 // DAC output voltage ,there is 0
 #define lfp_Register7 0x0087 // Impedance check electrode select, this is 0
 // on-chip Amplifier bandwidth Select
-//     //  using 500 Hz upper bandwidth; use on-chip programmable resistors
-#define lfp_Register8 0x1e88
-#define lfp_Register9 0x0589
-#define lfp_Register10 0x2b8a
-#define lfp_Register11 0x068b
+//     //  using 250 Hz upper bandwidth; use on-chip programmable resistors
+#define lfp_Register8 0x2a88
+#define lfp_Register9 0x0a89
+#define lfp_Register10 0x058a
+#define lfp_Register11 0x0d8b
 //     //  using 1 Hz lower bandwidth; use on-chip programmable resistors
 #define lfp_Register12 0x2c8c
 #define lfp_Register13 0x068d
@@ -142,8 +165,8 @@ extern const u16_t NINE_DUMMPY[9];
 
 /************************ spike 20khz sampling setting *******************/ 
 #define spike_Register0_enable 0xde80
-#define spike_Register1 0x4281 // VDD sense disable ,using 16 * 20KS/s ADC
-#define spike_Register2 0x0482 // MUX bias current, configuration as above
+#define spike_Register1 0x0481 // VDD sense disable ,using 16 * 20KS/s ADC
+#define spike_Register2 0x1282 // MUX bias current, configuration as above
 #define spike_Register3 0x0083 // diable tempS and digout
 // #define spike_Register4 0x8084
 #define spike_Register4 0x9384 // absmode disable + unsigned offset binary notation ADC + weak MISO + DSP high-pass filter enable(373Hz upper bandwidth at 17544 Hz)
@@ -166,6 +189,9 @@ extern const u16_t NINE_DUMMPY[9];
 
 /************************ spike 20khz sampling setting without DSP*******************/ 
 #define spike_raw_Register4 0x8084
+/************************ spike 10khz sampling setting without DSP*******************/ 
+#define spike_mode3_Register1 0x0881 // VDD sense disable ,using 16 * 10KS/s ADC
+#define spike_mode3_Register2 0x2882 // MUX bias current, configuration as above
 
 
 extern const u16_t Register_config_lfp[18];
@@ -200,6 +226,8 @@ extern bool sample_switch;
 uint32_t CS_Gpiote_init(void); // init gpiote: control spi cs line with ppi
 
 u16_t swapShort16(u16_t shortValue); // swap upper byte and lower byte in a u16_t
+
+void swap_bytes_builtin(uint16_t* arr, size_t len);
 
 // spi
 uint32_t spim_init(void); // init spim3 

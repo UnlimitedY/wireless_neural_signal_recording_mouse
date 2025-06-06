@@ -273,7 +273,7 @@ void mp2710_set_default_values(void)
     mp2710_t *p = &m_mp2710;
     // Vin parameter
     p->VIN_MIN = 5000; // Minimal Vin voltage: 5V
-    p->LPM_EN = 1; // Enable low-power mode; only connect battery, to reduce battery consumption
+    // p->LPM_EN = 1; // Enable low-power mode; only connect battery, to reduce battery consumption
 
     // Vbattery parameter
     p->VBATT_UVLO = 3030; // Battery protection voltage
@@ -290,11 +290,17 @@ void mp2710_set_default_values(void)
     p->VSYS_REG = 4200; // Ouput regulated voltage when Vin is present
     
     // charging parameter
-    p->CEB = 1; // Charge disabled
-    p->ICC = 8; // 8mA fast charge current：the minimum value available; which require at least 40mW power supply; ~4hours charging duration
+    // p->CEB = 1; // Charge disabled
+    p->ICC = 8; // 8mA fast char
     p->IPRE = 1;
     p->ITERM = 1;
     p->CHG_TMR = 0b00000010; // 8 hours fast charge timer
+
+    // 初始化的时候 使能电池充电
+    p->LPM_EN = 0; // disable low power mode
+    p->CEB = 0; // enable charging
+    p->FET_DIS = 0; 
+    p->EN_HIZ = 0; 
 }
 
 void mp2710_enter_shipping_mode(void)

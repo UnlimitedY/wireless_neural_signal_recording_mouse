@@ -1,5 +1,13 @@
 #include "RHDRecording.h"
 
+
+// GCC/Clang 内置函数
+void swap_bytes_builtin(uint16_t* arr, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        arr[i] = __builtin_bswap16(arr[i]);
+    }
+}
+
 uint32_t CS_Gpiote_init(void)
 {
 	// 注意：zepher 自动初始化了就不需要再初始化 gpiote；后续直接使用 gpiote driver 来配置 即可
@@ -86,25 +94,26 @@ void SPI_timer_event_handler(nrf_timer_event_t event_type, void *p_context) // <
 		(&spi)->p_reg->TXD.PTR = (uint32_t)&m_tx_buf[spi_overflow_flag];
 		// rx double buffer pointer
 		(&spi)->p_reg->RXD.PTR = (uint32_t)&m_rx_buf[spi_buff_flag][spi_overflow_flag];
-	}else{
+	}else if(sampe_mode < 3){
 		spi_overflow_flag = ((&spi)->p_reg->TXD.PTR - (uint32_t)&spike_m_tx_buf[SPIKE_SPI_TX_BUF_SIZE]) / 2; // mode 1下，溢出固定为14 ，也就是7个 sample
 		
-		// if((&spi)->p_reg->RXD.PTR > (uint32_t)&spike_m_rx_buf[1][SPIKE_SPI_TX_BUF_SIZE * 2 - 1]){
-		// 	sample_switch = false;
-		// }
 		// 	// tx buffer pointer
 		(&spi)->p_reg->TXD.PTR = (uint32_t)&spike_m_tx_buf[spi_overflow_flag];
 		// 	// rx double buffer pointer
 		(&spi)->p_reg->RXD.PTR = (uint32_t)&spike_m_rx_buf[spi_buff_flag][spi_overflow_flag];
 	}
+	else{
+		spi_overflow_flag = ((&spi)->p_reg->TXD.PTR - (uint32_t)&mode_3_m_tx_buf[MODE_3_SPI_TX_BUF_SIZE]) / 2; 
+		
+		// 	// tx buffer pointer
+		(&spi)->p_reg->TXD.PTR = (uint32_t)&mode_3_m_tx_buf[spi_overflow_flag];
+		// 	// rx double buffer pointer
+		(&spi)->p_reg->RXD.PTR = (uint32_t)&mode_3_m_rx_buf[spi_buff_flag][spi_overflow_flag];
+	}
 	
 	buffer_is_full = true;
-
 	nrfx_timer_resume(&RHD_timer_nRFX);
-	// *((volatile uint32_t *)((uint8_t *)(&RHD_timer_nRFX)->p_reg + (uint32_t)NRF_TIMER_TASK_START)) = 0x1UL;
-
 	k_wakeup(mainThread);
-
 	irq_unlock(key);
 }
 
@@ -166,12 +175,17 @@ uint32_t ppi_init(){
 		xfer_desc.tx_length = m_length;
 		xfer_desc.p_rx_buffer = (uint8_t const *)m_rx_buf[0];
 		xfer_desc.rx_length = m_length;
-	}else{
+	}else if(sampe_mode < 3){
 		// spike
 		// nrfx_spim_xfer_desc_t xfer_desc = NRFX_SPIM_XFER_TRX(spike_m_tx_buf, m_length, spike_m_rx_buf[0], m_length);
 		xfer_desc.p_tx_buffer = (uint8_t const *)spike_m_tx_buf;
 		xfer_desc.tx_length = m_length;
 		xfer_desc.p_rx_buffer = (uint8_t const *)spike_m_rx_buf[0];
+		xfer_desc.rx_length = m_length;
+	}else{
+		xfer_desc.p_tx_buffer = (uint8_t const *)mode_3_m_tx_buf;
+		xfer_desc.tx_length = m_length;
+		xfer_desc.p_rx_buffer = (uint8_t const *)mode_3_m_rx_buf[0];
 		xfer_desc.rx_length = m_length;
 	}
 	
@@ -336,9 +350,12 @@ void spi_transmit_buffer_reset()
 	if(sampe_mode == 0){
 		(&spi)->p_reg->RXD.PTR = (uint32_t)&m_rx_buf[0];
 		(&spi)->p_reg->TXD.PTR = (uint32_t)&m_tx_buf;
-	}else{
+	}else if(sampe_mode < 3){
 		(&spi)->p_reg->RXD.PTR = (uint32_t)&spike_m_rx_buf[0];
 		(&spi)->p_reg->TXD.PTR = (uint32_t)&spike_m_tx_buf;
+	}else{
+		(&spi)->p_reg->RXD.PTR = (uint32_t)&mode_3_m_rx_buf[0];
+		(&spi)->p_reg->TXD.PTR = (uint32_t)&mode_3_m_tx_buf;
 	}
 	
 
@@ -390,13 +407,23 @@ void RHD_tx_buf_setup()
 				m_tx_buf[i + j] = convert_block[j];
 			}
 		}
-	}else{ 
-		// spike 17khz
+	}else if(sampe_mode < 3){ 
+		// spike 20khz
 		for (int i = 0; i < SPIKE_TX_BUFFER_SIZE; i += SPIKE_CONVERT_FASHION_NUM)
 		{
 			for (int j = 0; j < SPIKE_CONVERT_FASHION_NUM; j++)
 			{
 				spike_m_tx_buf[i + j] = convert_block[j];
+			}
+		}
+	}
+	else{
+		// raster 10khz
+		for (int i = 0; i < MODE_3_TX_BUFFER_SIZE; i += NUM_CHANNELS)
+		{
+			for (int j = 0; j < NUM_CHANNELS; j++)
+			{
+				mode_3_m_tx_buf[i + j] = convert_block[j];
 			}
 		}
 	}
