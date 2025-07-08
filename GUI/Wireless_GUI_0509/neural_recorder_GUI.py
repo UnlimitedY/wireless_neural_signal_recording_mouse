@@ -92,7 +92,7 @@ class ESBMainWindow(UI.MainWindow):
         self.spike_raw_channel = 0 # raw data display channel
 
         ################# LFP raw data mode 0 
-        self.separate_interval = 500# 500 
+        self.separate_interval = 1000# 500 
         self.ring_lfp_pointer = 0
         self.LFP_x = np.arange(0, self.lfp_display_data_num, 1)
         self.LFP_raw_data =np.full((self.spike_channel_num ,self.lfp_display_data_num) ,np.nan) 
@@ -118,15 +118,15 @@ class ESBMainWindow(UI.MainWindow):
         self.ring_LSR_pointer = 0
         self.LSR_display_data_num = 1000 
         self.LSR_timestamp = np.arange(0, self.LSR_display_data_num, 1) 
-        self.CHG_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # battery charging status
-        self.PPM_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # battery_PPM
-        self.PG_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # Power status
+        self.RSOC_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # battery charging status
+        self.STAT_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # battery_PPM
+        self.Voltage_stat = np.full((1 ,self.LSR_display_data_num) ,np.nan) # Power status
         self.IMUdata = np.full((6 ,self.LSR_display_data_num) ,np.nan) # AcclX,Y,Z ,geclo X ,Y,Z
 
         # current battery status
-        self.CHG = 0
-        self.PPM = 0
-        self.PG = 0
+        self.RSOC = 0
+        self.Battery_STAT = 0
+        self.Battery_voltage = 0
         
         # Spike threshold auto update buffer
         self.calcST_counter = [0 for _ in range(self.spike_channel_num)]
@@ -338,7 +338,7 @@ class ESBMainWindow(UI.MainWindow):
         self.raster_tab.auto_threshold_button.clicked.connect(self.Auto_threshold_update)
         self.raster_tab.channel_combo.currentIndexChanged.connect(self.spike_threshold_set)
         self.raster_tab.threshold_combo.currentIndexChanged.connect(self.spike_threshold_set)
-        self.update_battery_button.clicked.connect(self.battery_mode_setting)
+        self.update_battery_button.clicked.connect(self.IMU_mode_setting)
         # self.lfp_tab.enable_filter_button.clicked.connect(self.lfp_filter_on)
         # self.lfp_tab.disable_filter_button.clicked.connect(self.lfp_filter_off)
 
@@ -454,7 +454,7 @@ class ESBMainWindow(UI.MainWindow):
                 self.IMU_accl_channel[imu_channel].setData(self.LSR_timestamp ,self.IMUdata[imu_channel] ,name=self.IMUaccle_name[imu_channel] ,
                                                  pen=pg.mkPen({'color': self.colorList[imu_channel] ,'width':1}),symbol='o')
             # battery data
-            self.update_battery_indicator(self.CHG, self.PPM, self.PG)
+            self.update_battery_indicator(self.RSOC, self.Battery_STAT, self.Battery_voltage)
              
     def raw_data_generator(self ,port, data):
         """
@@ -613,38 +613,40 @@ class ESBMainWindow(UI.MainWindow):
 
 
             """ sensing data 9 data """
-            sensors_data = np.array(data[3], dtype=np.float32)
-            sensor_end_point = self.ring_LSR_pointer + len(sensors_data[0])
-
-            self.CHG = int(sensors_data[6][-1])
-            self.PPM = int(sensors_data[7][-1])
-            self.PG = int(sensors_data[8][-1])
-            if(sensor_end_point > self.LSR_display_data_num):
-                temp_onset = sensor_end_point - self.LSR_display_data_num
-                for i in range(6):
-                    self.IMUdata[i][self.ring_LSR_pointer:] = sensors_data[i][0:-temp_onset]
-                    self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
-
-                self.CHG_stat[0][self.ring_LSR_pointer:] = sensors_data[6][0:-temp_onset]
-                self.CHG_stat[0][0:temp_onset] = sensors_data[6][-temp_onset:]
-
-                self.PPM_stat[0][self.ring_LSR_pointer:] = (sensors_data[7][0:-temp_onset])
-                self.PPM_stat[0][0:temp_onset] = sensors_data[7][-temp_onset:] 
-
-                self.PG_stat[0][self.ring_LSR_pointer:] = (sensors_data[8][0:-temp_onset])
-                self.PG_stat[0][0:temp_onset] = sensors_data[8][-temp_onset:] 
+            if(int(data[0][0]) != 2):
                 
-                self.ring_LSR_pointer = temp_onset
-            else:
-                try:
+                sensors_data = np.array(data[3], dtype=np.float32)
+                sensor_end_point = self.ring_LSR_pointer + len(sensors_data[0])
+
+                self.RSOC = int(sensors_data[6][-1])
+                self.Battery_STAT = int(sensors_data[7][-1])
+                self.Battery_voltage = int(sensors_data[8][-1])
+                if(sensor_end_point > self.LSR_display_data_num):
+                    temp_onset = sensor_end_point - self.LSR_display_data_num
                     for i in range(6):
-                        self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
-                    self.CHG_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[6]
-                    self.PPM_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[7]
-                    self.PG_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[8]
-                except:
-                    print(sensors_data[i])
-                self.ring_LSR_pointer = sensor_end_point
+                        self.IMUdata[i][self.ring_LSR_pointer:] = sensors_data[i][0:-temp_onset]
+                        self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
+
+                    self.RSOC_stat[0][self.ring_LSR_pointer:] = sensors_data[6][0:-temp_onset]
+                    self.RSOC_stat[0][0:temp_onset] = sensors_data[6][-temp_onset:]
+
+                    self.STAT_stat[0][self.ring_LSR_pointer:] = (sensors_data[7][0:-temp_onset])
+                    self.STAT_stat[0][0:temp_onset] = sensors_data[7][-temp_onset:] 
+
+                    self.Voltage_stat[0][self.ring_LSR_pointer:] = (sensors_data[8][0:-temp_onset])
+                    self.Voltage_stat[0][0:temp_onset] = sensors_data[8][-temp_onset:] 
+                    
+                    self.ring_LSR_pointer = temp_onset
+                else:
+                    try:
+                        for i in range(6):
+                            self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
+                        self.RSOC_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[6]
+                        self.STAT_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[7]
+                        self.Voltage_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[8]
+                    except:
+                        print(sensors_data[i])
+                    self.ring_LSR_pointer = sensor_end_point
 
 
     """callback function"""
@@ -702,10 +704,10 @@ class ESBMainWindow(UI.MainWindow):
        
 
     def update_idle_status(self, status):
-        self.CHG = status[0]
-        self.PPM = status[1]
-        self.PG = status[2]
-        self.update_battery_indicator(self.CHG, self.PPM, self.PG)
+        self.RSOC = status[0]
+        self.Battery_STAT = status[1]
+        self.Battery_voltage = status[2]
+        self.update_battery_indicator(self.RSOC, self.Battery_STAT, self.Battery_voltage)
     
     def start_save_lfp(self):
         self.mSerial.save_file_lfp_flag = True
@@ -825,12 +827,12 @@ class ESBMainWindow(UI.MainWindow):
             QMessageBox.warning(self, "Warning", "Please set the sample mode to Spike Mode 1!")
             pass
     
-    def battery_mode_setting(self):
-        self.MP2710_command = [0x03, 0x00 ,  0x00 ,0x00] 
+    def IMU_mode_setting(self):
+        self.IMU_command = [0x03, 0x00 ,  0x00 ,0x00] 
         # battery_mode
-        self.MP2710_command[-2] = int(hex(self.battery_status_combo.currentIndex() + 1) ,16)
-        print(self.MP2710_command)
-        self.err = self.mSerial.send_data(self.MP2710_command)
+        self.IMU_command[-2] = int(hex(self.battery_status_combo.currentIndex() + 1) ,16)
+        print(self.IMU_command)
+        self.err = self.mSerial.send_data(self.IMU_command)
 
     # def lfp_filter_on(self):
     #     self.mSerial.GUIUpdateInterval = 100 # TODO 增加更新间隔来增加filter 的窗口

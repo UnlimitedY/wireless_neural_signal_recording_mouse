@@ -209,3 +209,19 @@ nrfx_err_t data_read(uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t d
 
     return errCode;
 }
+
+/*******************for bq25176 ********************/
+void Charging_stats_init(void){
+    nrf_gpio_cfg_input(Bq25176_PG, NRF_GPIO_PIN_PULLUP);
+    nrf_gpio_cfg_input(Bq25176_PG_STAT, NRF_GPIO_PIN_PULLUP);
+}
+
+void Charging_PG_PG_STAT_get(uint16_t *Charging){
+    uint16_t bq25176[2];
+    bq25176[0] = nrf_gpio_pin_read(Bq25176_PG);
+    bq25176[1] = nrf_gpio_pin_read(Bq25176_PG_STAT);
+
+    *Charging = (int16_t)bq25176[0];
+    *Charging = (*Charging * 256) + (int16_t)bq25176[1];
+
+}

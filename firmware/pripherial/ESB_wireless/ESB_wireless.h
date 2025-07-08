@@ -41,7 +41,7 @@ extern bool sensor_update_flag; // flag of the sensor data is updated
 
 extern u16_t threshold_list[16];
 
-extern u8_t battery_setting[2];
+extern u8_t IMU_init[2];
 
 #define rf_channel_num 6
 extern uint8_t rf_channel_list[rf_channel_num]; // list of channels

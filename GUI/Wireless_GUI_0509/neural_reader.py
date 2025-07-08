@@ -584,6 +584,10 @@ class SerialPort(QThread):
                     self.mode_3_data_buffer += (packets[20:] + ' ')
                     self.mode_3_buffer_counter += 1
 
+                    # for test
+                    if(self.receive_num_packet % 100 == 0):
+                        print(self.mode_3_timestamp_buffer)
+
                     if(self.mode_3_buffer_counter >= self.mode_3_maxlen):
                         self.mode_3_packets_process()
                         self.mode_3_buffer_counter = 0
@@ -780,6 +784,8 @@ class SerialPort(QThread):
         temp_sensor_data[3:6] = np.array(list(map(lambda x:self.LSM6DS3_gyroData_in_dps(self.DAC(swap16Hex(x), two_complement=True)), temp_sensor_data[3:6])))
         # LC data
         temp_sensor_data[6:] = np.array(list(map(lambda x:self.DAC(swap16Hex(x)), temp_sensor_data[6:])))
+
+        # print(temp_sensor_data[6:])
         
         for i in range(9):
             temp_sensor = list(temp_sensor_data[np.arange(0 + i, len(temp_sensor_data) ,9)])

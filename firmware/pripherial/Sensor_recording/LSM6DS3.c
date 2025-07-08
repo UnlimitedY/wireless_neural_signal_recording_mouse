@@ -22,7 +22,7 @@ int LSM6DS3_who_am_i(void)
   bool is_busy = 1;
   err_code = data_read(WHO_AM_I, &who_am_i, 1, 1);
 
-  if(who_am_i !=0x69){
+  if(who_am_i !=0x6A){
     return who_am_i;
   }else{
     return -1;
@@ -38,14 +38,12 @@ int LSM6DS3_who_am_i(void)
 uint8_t LSM6DS3_init(void)
 {
   uint8_t err_code;
-  settings.accel_enable           = 1;      // 0 - Disable. 1 - Enable
   settings.accel_range            = 2;      // Full Scale(FS) range (in g). Select from: 2, 4, 8, 16
   settings.accel_samplerate       = 104;    // Hz. Select from: 13, 26, 52, 104, 208, 416, 833, 1666
   settings.accel_bandwidth        = 400;    // Hz. Select from: 50, 100, 200, 400
   settings.accel_FIFO_enable      = 0;      // Set to include accelerometer data in FIFO buffer
   settings.accel_FIFO_decimation  = 0;      // Set to activate.
 
-  settings.gyro_enable            = 0;      // 0 - Disable. 1 - Enable
   settings.gyro_range             = 500;   // Angular Rate range (in deg/s).  Can be: 125, 245, 500, 1000, 2000
 	settings.gyro_samplerate        = 104;    // Hz. Select from: 13, 26, 52, 104, 208, 416, 833, 1666
 	settings.gyro_bandwidth         = 400;    // Hz. Select from: 50, 100, 200, 400;
@@ -94,24 +92,24 @@ uint8_t LSM6DS3_config(void)
   tx_data[1] = 0;
   if(settings.accel_enable == 1) {
     // Bandwidth lowpass filter
-    // switch(settings.accel_bandwidth) {
-    //   case 50:
-    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_50Hz;
-    //           break;
+    switch(settings.accel_bandwidth) {
+      case 50:
+              tx_data[1] |= LSM6DS3_IMU_BW_XL_50Hz;
+              break;
 
-    //   case 100:
-    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_100Hz;
-    //           break;
+      case 100:
+              tx_data[1] |= LSM6DS3_IMU_BW_XL_100Hz;
+              break;
 
-    //   case 200:
-    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_200Hz;
-    //           break;
+      case 200:
+              tx_data[1] |= LSM6DS3_IMU_BW_XL_200Hz;
+              break;
 
-    //   default:
-    //   case 400:
-    //           tx_data[1] |= LSM6DS3_IMU_BW_XL_400Hz;
-    //           break;
-    // }
+      default:
+      case 400:
+              tx_data[1] |= LSM6DS3_IMU_BW_XL_400Hz;
+              break;
+    }
 
     // Full scale range
     switch(settings.accel_range) {
@@ -257,20 +255,21 @@ uint8_t LSM6DS3_config(void)
   }
 
   err_code = data_write(tx_data[0], &tx_data[1] ,1, 1);
-
-  LSM6DS3_set_accel_normal_mode(settings.accel_samplerate);
-  // LSM6DS3_set_gyro_active_mode();
   
+  if(settings.accel_enable){
+    LSM6DS3_set_accel_normal_mode(settings.accel_samplerate);
+  }else{
+    LSM6DS3_set_accel_power_down_mode();
+  }
+
+  if(settings.gyro_enable){
+    LSM6DS3_set_gyro_active_mode();
+  }else{
+    LSM6DS3_set_gyro_sleep_mode();
+  }
   uint8_t config_return = 0;
 
   return config_return;
-  // LSM6DS3_set_accel_high_performance_mode(settings.accel_samplerate);
-  // LSM6DS3_set_accel_power_down_mode();
-  // LSM6DS3_set_gyro_sleep_mode(); 
-
-  // enable all sample: default enabled not used
-  // LSM6DS3_accel_enable();
-  // LSM6DS3_gyro_enable();
 }
 
 

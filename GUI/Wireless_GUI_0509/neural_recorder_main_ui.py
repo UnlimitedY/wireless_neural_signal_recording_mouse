@@ -357,7 +357,7 @@ class ImuTab(BaseDisplayTab):
 
     def populate_controls(self):
         # 控制面板设置为空
-        empty_label = QLabel("3-axis IMU signal")
+        empty_label = QLabel("6-axis IMU signal")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.control_panel_layout.addWidget(empty_label, 0, 0)
 
@@ -499,7 +499,7 @@ class MainWindow(QMainWindow):
         control_group_layout.addWidget(self.sampling_mode_label)
         
         self.sampling_mode_combo = QComboBox()
-        self.sampling_mode_combo.addItems(["16 channels LFP", "single channel Spike" ,"4 channels Spike"])
+        self.sampling_mode_combo.addItems(["16 channels LFP", "single channel Spike" ,"4 channels Spike", "LFP+Raster"])
         self.sampling_mode_combo.setCurrentIndex(0)
         control_group_layout.addWidget(self.sampling_mode_combo)
         
@@ -526,14 +526,14 @@ class MainWindow(QMainWindow):
         
         # 电池状态下拉框
         self.battery_status_combo = QComboBox()
-        self.battery_status_combo.addItems(["charging", "shipping", "Hiz"])
+        self.battery_status_combo.addItems(["low-power", "Accel", "Accel+gyro"])
         self.battery_status_combo.setCurrentIndex(0)
-        # self.battery_status_combo.currentIndexChanged.connect(self.battery_status_changed)
+        self.battery_status_combo.currentIndexChanged.connect(self.IMU_status_changed)
         status_group_layout.addWidget(self.battery_status_combo)
         
         # 更新电池状态按钮
         self.update_battery_button = QPushButton("battery_status")
-        self.update_battery_button.clicked.connect(self.update_battery_status)
+        # self.update_battery_button.clicked.connect(self.update_battery_status)
         status_group_layout.addWidget(self.update_battery_button)
         
         # RSSI值显示
@@ -620,37 +620,43 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Sample stop")
     
     
-    def update_battery_status(self):
-        """更新电池状态"""
-        print(f"发送电池状态更新命令: {self.battery_status_combo.currentText()}")
+    def IMU_status_changed(self):
+        """更新IMU状态"""
+        print(f"发送IMU状态更新命令: {self.battery_status_combo.currentText()}")
     
-    def update_battery_indicator(self, level, PPM, PG):
-        """更新电池状态指示器 charging status 表示颜色； 文字表示PPM状态"""
+    def update_battery_indicator(self, level, Charging_STAT, Battery_Voltage):
+        """更新电池状态指示器 charging status 表示颜色； 文字表示STAT状态"""
+        # PG + PG_STAT
+        PG = 0
+        PG_STAT = 0
+        if(Charging_STAT == 0):
+            PG = 0
+            PG_STAT = 0
+        elif(Charging_STAT == 1):
+            PG = 1
+            PG_STAT = 0
+        elif(Charging_STAT == 256): 
+            PG = 0
+            PG_STAT = 1
+        elif(Charging_STAT == 257):
+            PG = 1
+            PG_STAT = 1
+
         color = "w"
-        if level == 0: ## not charging
+        if PG == 0: # power failed
             color = "#FF5252"  # 红色
-        elif level == 1: ## Pre-charging
-            color = "#d96c58"  
-        elif level == 2: ## CC charging fast charging
-            color =  "#64B5F6"  # 蓝色
-        elif level == 3: ## CV charging
-            color = "#8ca164"  
-        elif level == 4: ## Charging complete
-            color = "#66BB6A"  # 绿色
-        
+        elif PG == 1: # power good
+            if PG_STAT == 0: # shipping
+                color = "#d96c58"  # 橙色
+            elif PG_STAT == 1: # charging
+                color = "#66BB6A"  # green
+
         self.update_battery_button.setStyleSheet(f"background-color: {color}; color: black; border-radius: 4px; padding: 5px;")
 
-        if(PPM == 1):
-            PPM = "PPM"
-        else:
-            PPM = "NO PPM"
+        RSOC = str(level) + "%"
+        Battery_Voltage = str(Battery_Voltage/1000)
 
-        if(PG == 1):
-            PG = "PG"
-        else:
-            PG = "PF"
-
-        self.update_battery_button.setText(PPM + " " + PG)
+        self.update_battery_button.setText(RSOC + " " + Battery_Voltage)
     
     def update_rssi(self, value):
         """更新RSSI值显示"""

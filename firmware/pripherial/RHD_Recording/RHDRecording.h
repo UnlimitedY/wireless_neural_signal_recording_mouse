@@ -99,13 +99,13 @@ extern u16_t spike_channel_array[16][SPIKE_SAMPLE_POINT_NUM];
 extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE)]; // 21 sample each MUA bin. 105 sample is equal to 5 bins and 16 channels correspond to 5 shorts ,given that 1bit/sample
 
 /*********************************** mode 3 ************************************/
-// 2025.6.4：增加 mode3，只做所有通道的spike detection，根据之间的研究结果，使用10Khz的采样对detection的影响很小【ref】；
+// 2025.6.4：增加 mode3，只做所有通道的spike detection，根据之间的研究结果，使用12.5Khz的采样对detection的影响很小【ref】；
 // 使用mode1 来更新threshold； mode3常开来同时获得 lfp 和 spike events
 // 使用 双向4阶 IIR 分离出300Hz以内的信号并下采样到1Khz之后上传到 host；
 // 使用 2阶 IIR 滤波器分离出300Hz 以上的信号并进行online spike detection，压缩为MUA 上传到host
 // 该模式只使用3-axis IMU数据，功耗期望控制在30-40 mW左右
-// 一个包：16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 3 (IMU) + 3 (battery) + 5 (raster, 1 ms per short)  [~5 ms] [10 points per raster bin: ~1ms]
-#define CHUNK_SIZE  50 // 5ms chunks 
+// 一个包：16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 3 (IMU) + 3 (battery) + 5 (raster, 0.8 ms per short)  [~4 ms] [10 points per raster bin: ~0.8ms]
+#define CHUNK_SIZE  50 // 4ms chunks 
 #define MODE_3_LFP_SIZE 80 // 5 * 16 == 80
 #define MODE_3_SPI_TX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
 #define MODE_3_SPI_RX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
@@ -135,7 +135,7 @@ extern const u16_t NINE_DUMMPY[9];
 #define CLEAR 0x006A	 // not necessary to use this command
 						 // Registers configuration using write command
 #define Register0_disable 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
-/************************ lfp 1khz sampling setting ************************/                         
+/************************ mode0: lfp 1khz sampling setting ************************/                         
 #define lfp_Register0_enable 0xde80 // amp fast settle is 0, enable ADC
 
 #define lfp_Register1 0x2081 // VDD sense disable ,using 16 * 1 KS/s ADC
@@ -158,12 +158,12 @@ extern const u16_t NINE_DUMMPY[9];
 #define lfp_Register12 0x2c8c
 #define lfp_Register13 0x068d
 // indicidual Amplifier Power ,channel 0-15 set to one for using these channels' Amplifier
-#define lfp_Register14 0xff8e
+#define lfp_Register14 0x008e
 #define lfp_Register15 0xff8f
-#define lfp_Register16 0x0090
+#define lfp_Register16 0xff90
 #define lfp_Register17 0x0091
 
-/************************ spike 20khz sampling setting *******************/ 
+/************************ mode1: spike 20khz sampling setting *******************/ 
 #define spike_Register0_enable 0xde80
 #define spike_Register1 0x0481 // VDD sense disable ,using 16 * 20KS/s ADC
 #define spike_Register2 0x1282 // MUX bias current, configuration as above
@@ -182,16 +182,18 @@ extern const u16_t NINE_DUMMPY[9];
 #define spike_Register12 0x2c8c
 #define spike_Register13 0x068d
 // indicidual Amplifier Power ,all set to one for using all channels' Amplifier
-#define spike_Register14 0xff8e
+#define spike_Register14 0x008e
 #define spike_Register15 0xff8f
-#define spike_Register16 0x0090
+#define spike_Register16 0xff90
 #define spike_Register17 0x0091
 
-/************************ spike 20khz sampling setting without DSP*******************/ 
+/************************ mode2: spike 20khz sampling setting without DSP*******************/ 
 #define spike_raw_Register4 0x8084
-/************************ spike 10khz sampling setting without DSP*******************/ 
-#define spike_mode3_Register1 0x0881 // VDD sense disable ,using 16 * 10KS/s ADC
-#define spike_mode3_Register2 0x2882 // MUX bias current, configuration as above
+#define spike_mode2_Register1 0x0481 // using 16 * 20KS/s ADC
+#define spike_mode2_Register2 0x1282
+/************************ mode3: spike 12.5khz sampling setting without DSP*******************/ 
+#define spike_mode3_Register1 0x0881 // VDD sense disable ,using 16 * 12.5KS/s ADC
+#define spike_mode3_Register2 0x2082 // MUX bias current, configuration as above
 
 
 extern const u16_t Register_config_lfp[18];

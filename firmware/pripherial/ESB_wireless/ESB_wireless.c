@@ -138,10 +138,10 @@ void command_process(uint8_t length, uint16_t *data)
         }
     }
         break;
-    case 0x0003: // charging enable
+    case 0x0003: // IMU mode switch
     {
-        battery_setting[1] = 1;
-        battery_setting[0] =  (u8_t)data[1];
+        IMU_init[1] = 1;
+        IMU_init[0] =  (u8_t)data[1];
     }
         break;
 
@@ -160,7 +160,7 @@ void command_process(uint8_t length, uint16_t *data)
     {
         mode_switch_flag = true;
         sample_switch = false;
-        if((u8_t)data[1] < 3){
+        if((u8_t)data[1] <= 3){
             sampe_mode = data[1];
         }
     }

@@ -15,8 +15,11 @@
 /*Pin Definitions*/
 
 #define I2C0_NODE DT_NODELABEL(i2c0)
-#define LC_SDA_PIN             25 //  25 for omnetics 22 for other
-#define LC_SCL_PIN             22 //  22 for omnetics 25 for other
+#define LC_SDA_PIN             22 //  
+#define LC_SCL_PIN             25 //
+
+#define Bq25176_PG             NRF_GPIO_PIN_MAP(1, 4)
+#define Bq25176_PG_STAT             NRF_GPIO_PIN_MAP(1, 1)
 
 #define LSM_CS_PIN              NRF_GPIO_PIN_MAP(0, 28) // 28 for omnetics  30 for other
 #define LSM_SCL_PIN             NRF_GPIO_PIN_MAP(0, 30) // NRF_GPIO_PIN_MAP(0, 1) for other  30 for omnetics
@@ -65,6 +68,11 @@ void mergeRegisterAndData(uint8_t *pTxBuf, uint8_t regAddr, uint8_t *pData, uint
 nrfx_err_t data_write(uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device);
 
 nrfx_err_t data_read(uint8_t regAddr, uint8_t *pData, uint8_t dataLen, uint8_t device);
+
+// for bq25176
+void Charging_PG_PG_STAT_get(uint16_t *Charging);
+
+void Charging_stats_init(void);
 
 /*******************************************************************************/
 #endif

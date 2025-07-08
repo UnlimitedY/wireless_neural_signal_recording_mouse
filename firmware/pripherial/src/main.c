@@ -85,7 +85,7 @@ const u16_t Register_config_spike[18] = {spike_Register0_enable, spike_Register1
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
                                         spike_Register15, spike_Register16, spike_Register17};
 
-const u16_t Register_config_spike_raw[18] = {spike_Register0_enable, spike_Register1, spike_Register2, spike_Register3, spike_raw_Register4, 
+const u16_t Register_config_spike_raw[18] = {spike_Register0_enable, spike_mode2_Register1, spike_mode2_Register2, spike_Register3, spike_raw_Register4, 
                                         spike_Register5, spike_Register6, spike_Register7, spike_Register8, spike_Register9, 
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
                                         spike_Register15, spike_Register16, spike_Register17};
@@ -104,7 +104,7 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 bool mode_switch_flag = false; 
 
 //TODO
-u16_t sampe_mode = 3; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
+u16_t sampe_mode = 0; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
 uint32_t timer_period = 50; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
 uint32_t reset_ticks_value = SPI_RX_BUF_SIZE;
 
@@ -214,61 +214,33 @@ int16_t lc_data[3];
 struct IMU_settings settings;
 
 // EN_HIZ; CEB; shipping
-u8_t battery_setting[2] = {0, 0}; //mode index: charge mode; shipping mode; HIZ mode(disable power);    update_flag
+u8_t IMU_init[2] = {0, 0}; //mode index: low-power; ACCEL; ACCEL + GYRO;    update_flag
 
-void setup_battery_charge(void){
-        twim_init(); 
-        k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
-        // 初始化 2710
-	bool check_2710 = false; 
-	check_2710 = mp2710_init();
-	while(!check_2710){
-                // LED_hinting(500, 2);
-                LOG_INF("MP2710 battery init failed");
-                k_sleep(K_SECONDS(1));  
-	}
+void IMU_mode_switch(void){
+        if(sampe_mode != 2){ // sample mode 2 will not record IMU data
+                if(IMU_init[0] == 1){
+                settings.accel_enable = 0;
+                settings.gyro_enable = 0;
+                }
+                else if(IMU_init[0] == 2){
+                settings.accel_enable = 1;
+                settings.gyro_enable = 0;
+                }
+                else if(IMU_init[0] == 3){
+                settings.accel_enable = 1;
+                settings.gyro_enable = 1;
+                }
+                else{
+                // default
+                settings.accel_enable = 0;
+                settings.gyro_enable = 0;
+                }
+        }else{
+                settings.accel_enable = 0;
+                settings.gyro_enable = 0; 
+        }
 
-        mp2710_read_regs(); // read all default values to driver
-        mp2710_set_default_values();
-        mp2710_write_regs();
-}
-
-void get_battery_status(){
-        mp2710_t *p = &m_mp2710;
-        mp2710_read_reg(8);
-        mp2710_read_reg(9);
-        // charge status
-        lc_data[0] = p->CHG_STAT;
-        // PPM status
-        lc_data[1] = p->PPM_STAT;
-        // Power status
-        lc_data[2] = p->PG_STAT;
-}
-
-void battery_mode_switch(void){
-        // 注意：PPM 是基于电压调控的；但Vin 电压降低的时候才会进行调控
-        mp2710_t *p = &m_mp2710;
-        // charge mode
-        if(battery_setting[0] == 1){
-                p->LPM_EN = 0; // disable low power mode
-                p->CEB = 0; // enable charging
-                p->FET_DIS = 0; 
-                p->EN_HIZ = 0; 
-        }
-        // shipping mode (disconnect battery) [if Vin is online, the shipping mode will exit 80ms later]  
-        else if(battery_setting[0] == 2){
-                p->FET_DIS = 1; 
-                p->CEB = 1; // disable charging
-        }
-        else if(battery_setting[0] == 3){
-                p->LPM_EN = 1;
-                p->EN_HIZ = 1; // block Vin
-                p->CEB = 1; // disable charging
-        }
-        else if(battery_setting[0] > 3){
-                // change the Icc
-                p->ICC = (battery_setting[0] - 3) + 8;
-        }
+        err = LSM6DS3_init();
 }
 
 void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导致 发热问题，可能是gpio 上拉电流过大
@@ -292,32 +264,50 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
                 }
 	}
         LOG_INF("LSM init success\n");
-	err = LSM6DS3_init(); // 注意使用 high sample rate 的accle采样的时候要提前开启high performance mode ;同时active gryo 
-	if(err != 0){
-                while(1){
-                        // LED_hinting(500, 2);
-                        LOG_INF("LSM6DS3_init %x \n" ,err);
-                        k_sleep(K_SECONDS(1));
-                };
-        }
+        settings.accel_enable = 0;
+        settings.gyro_enable = 0; 
+	err = LSM6DS3_init(); // 初始化为 低功耗模式，全部关闭
+        /******* for LC *******/
+        twim_init(); 
+        k_sleep(K_MSEC(500)); // 注意，设备的初始化需要一定的时间
+        // 初始化 LC battery
+	int LCID; // APT
+	LCID = getChipID();
+	while(LCID != 0x001e){
+                LED_hinting(500, 2);
+                LOG_INF("LC battery init failed %x \n" ,LCID);
+                LCID = getChipID();
+                k_sleep(K_SECONDS(1));  
+	}
+	// 50mAH capacity ;
+	LC_init();
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
         /*
         * 记录 6-axis的值；关闭 角加速度测量；注意：在lsm_init中要对应开启角加速度mode和配置寄存器
         */
-	LSM6DS3_read_accl_data();
-	// LSM6DS3_read_gyro_data();
+       if(IMU_init[0] == 2){
+                LSM6DS3_read_accl_data();
+       }
+        else if(IMU_init[0] == 3){
+                LSM6DS3_read_accl_data();
+                LSM6DS3_read_gyro_data();
+        }
 }
 
 void BatteryPower_Temp_Read(u16_t *data){ // not used
 	// RSOC
 	LC_getRSOC(data); // 0-100%
-	// battery status
-	LC_getStatus(data + 1);
-	// LC_clearStatus();
+
+	// charging_stat
+	Charging_PG_PG_STAT_get(data + 1);
+
 	// temp of battery
-	LC_getTemperature(data + 2); // * 0.1k
+        // LC_getTemperature(data + 2); // * 0.1k
+
+        // battery_voltage
+        LC_getCellVoltage(data + 2);
 }
 
 /************************** main-used function **************************************/
@@ -367,7 +357,6 @@ u16_t init_everything(void){
         memset(imu_data, 0, sizeof(imu_data));
         memset(lc_data, 0, sizeof(lc_data));
         
-        setup_battery_charge();
         setup_sensor(); // only accel; 104Hz
         /**************** ESB init ******************/     
         err = clocks_start();
@@ -412,13 +401,13 @@ u16_t init_RHD(){
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike);
         }else if(sampe_mode == 2){ 
-                // spike 20khz
+                // spike 20khz 4 channels
                 timer_period = 3; 
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike_raw);
         }else if(sampe_mode == 3){
-                // spike 10khz + 1khz lfp
-                timer_period = 6; 
+                // spike 12.5khz + 1.25khz lfp 6 ms
+                timer_period = 5; 
                 reset_ticks_value = MODE_3_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_mode3);
         }
@@ -465,9 +454,10 @@ u16_t low_power(void){
         nrfx_spim_uninit(&spi_init); // for low-power
         nrfx_gppi_channels_disable(BIT(gp_channel_1));
 	nrfx_gppi_channels_disable(BIT(gp_channel_2));
-        // TODO LSM 没有显著功耗减低的效果;需要在初始化的时候就直接关掉，可能是spi 通讯的问题导致的，也可能是驱动的问题
-        // LSM6DS3_set_accel_power_down_mode();
-        // nrfx_spim_uninit(&lsm_spi);
+        // LSM
+        settings.accel_enable = 0;
+        settings.gyro_enable = 0; 
+        err = LSM6DS3_init();
 }
 
 
@@ -767,14 +757,7 @@ int main(void)
                                 continue;
                         }
 
-                        /* battery set */
-                        if(battery_setting[1]){
-                                battery_setting[1] = 0;
-                                battery_mode_switch();
-                                mp2710_write_regs();
-                        }
-
-                        get_battery_status();
+                        BatteryPower_Temp_Read(lc_data);
                         /* empty esb packets */
                         err = empty_payload_wrap(lc_data);
                         if(err){
@@ -790,11 +773,11 @@ int main(void)
                         init_RHD();
                         nrfx_gpiote_out_task_enable(&gpiote_instance, NRFX_SPIM_SS_PIN);
                         nrfx_gpiote_out_set(&gpiote_instance, NRFX_SPIM_SS_PIN); // reset the CS line to disable
-                        /* LSM */
-                        // setup_sensor();
                         /* filter */
                         filter_init(100.f); // 这里设定的是uV值，在实际的设置中会自动根据 filter的放缩进行放缩
-
+                        /* IMU init */
+                        IMU_mode_switch();
+                        
                         /* begining sample */
                         buffer_is_full = false;
                         sampling = true;
@@ -881,7 +864,7 @@ int main(void)
                                 sensor_update_flag = 1;
                                 packets_counter = packet_timestamp;
                                 LSM6DS3_Read(); // 500us 6-axis blocking mode
-                                get_battery_status();
+                                BatteryPower_Temp_Read(lc_data);
                         }
 
                 /*** 1. structured copy rx_buf data ***/
@@ -912,7 +895,7 @@ int main(void)
                                                                         imu_data, lc_data, SPIKE_SAMPLE_POINT_NUM, recorded_spike_channel);
                         }else if(sampe_mode == 2){
                                 /* send other sensor data */
-                                err = spike_sensor_tx_payload_wrap(imu_data, lc_data);
+                                // err = spike_sensor_tx_payload_wrap(imu_data, lc_data);
 
                                 /* here send 4 channel spike raw data with lfp in 3 packets, without spike online detection */
                                 for (int packets_nu = 0 ; packets_nu < 3; packets_nu++){ // 3 packets
@@ -928,7 +911,7 @@ int main(void)
                         }else if(sampe_mode == 3){ // TODO Threshold update : 将mode1 和mode3的threshold 联合在一起并检查这个threshold的准确性
                                 // head + timestamp + flag + imu + battery + lfp + raster
                                 err = mode_3_tx_payload_wrap(mode_3_array_lfp_t, mua_output, imu_data, lc_data, sizeof(mode_3_array_lfp_t)/2);
-                        }
+                        } // 31.45mW; 8.5 mA 3.7V 
                         
                 /*** 4. suspend main thread and wait to be waked up ***/
                 sensor_update_flag = 0;

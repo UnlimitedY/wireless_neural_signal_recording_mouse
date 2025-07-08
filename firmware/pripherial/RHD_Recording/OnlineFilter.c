@@ -119,20 +119,20 @@ arm_status calculate_butterworth_coeffs(FilterConfig *config) {
     }
     config->num_stages = config->order / 2;
     
-    // coeffi
+    // coeffi 625
     config->coeffs[0] = 1.0f;     // b0
 	config->coeffs[1] = 2.0f; // b1
 	config->coeffs[2] = 1.0f;     // b2
-	config->coeffs[3] = 1.833125260099805142743889518897049129009f; // a1
-	config->coeffs[4] = -0.866180446442667895112776932364795356989f; // a2
+	config->coeffs[3] = 1.700964331943525920110005245078355073929f; // a1
+	config->coeffs[4] = -0.788499739815297973066776648920495063066f; // a2
 
 	config->coeffs[5] = 1.00000000f;     // b0
 	config->coeffs[6] = 2.0000000f; // b1
 	config->coeffs[7] = 1.0f;     // b2
-	config->coeffs[8] = 1.674660947290977031087777504581026732922f; // a1
-	config->coeffs[9] = -0.704858681662279384916303115460323169827f; // a2
+	config->coeffs[8] = 1.479674216931193386770360120863188058138f; // a1
+	config->coeffs[9] = -0.555821543282489005655122582538751885295f; // a2
 
-    config->gain = 0.008263796585715696765839233250972029055f * 0.007549433592825576314067070882174448343f;
+    config->gain = 0.021883851967943023647533706821377563756f * 0.019036831587823873496168047836363257375f;
     return ARM_MATH_SUCCESS;
 }
 
@@ -151,10 +151,10 @@ arm_status calculate_highpass_butterworth_coeffs(FilterConfig *config) {
     config->coeffs[0] = 1.0f;     // b0
 	config->coeffs[1] = -2.0f; // b1
 	config->coeffs[2] = 1.0f;     // b2
-	config->coeffs[3] = 1.734725768809275203707898072025272995234f; // a1
-	config->coeffs[4] = -0.766006600943263893377377371507463976741f; // a2
+	config->coeffs[3] = 1.78743251795648472324273825506679713726f; // a1
+	config->coeffs[4] = -0.807949591420913271200276994932210072875f; // a2
 
-	config->gain = 0.875183092438134746515743245254270732403f;
+	config->gain = 0.898845527344349526366329428128665313125f;
     
     return ARM_MATH_SUCCESS;
 }

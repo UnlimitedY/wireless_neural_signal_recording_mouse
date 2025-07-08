@@ -21,8 +21,8 @@
 #define FLOAT32_MIN_SAFE -1e6f 
 #define Filter_scale 1.0f // 给所有输出filer的值在转为uV后乘以 0.1
 
-#define ORIGINAL_FS 10000    // Original sampling rate 10kHz
-#define TARGET_FS 1000       // Target sampling rate after low-pass filtering
+#define ORIGINAL_FS 12500    // Original sampling rate 10kHz
+#define TARGET_FS 1250       // Target sampling rate after low-pass filtering
 #define DECIMATION_FACTOR 10 // 10kHz -> 1kHz
 #define MAX_FILTER_ORDER 4   // Maximum filter order
 
@@ -34,7 +34,7 @@
 #define IIR_ORDER_lowpass 4          // IIR filter order
 #define IIR_ORDER_highpass 2         // IIR filter order
 
-#define IIR_CUTOFF_lowpass 300.0f          // IIR filter cutoff
+#define IIR_CUTOFF_lowpass 625.0f          // IIR filter cutoff 相位延迟 最大1ms （1250 Hz 采样）
 #define IIR_CUTOFF_highpass 300.0f          // IIR filter cutoff
 
 // Memory alignment for ARM NEON/SIMD

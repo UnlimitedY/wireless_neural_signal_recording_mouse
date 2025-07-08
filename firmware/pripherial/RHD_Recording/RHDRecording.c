@@ -384,7 +384,7 @@ void RHD_tx_buf_setup()
 	// recording: convert
 	// cconvert channels
 	for (int j = 0;j < 16;j++){
-		convert_block[j] = Convertcommand_generator(j, 0);
+		convert_block[j] = Convertcommand_generator(j + 8, 0);
 	}
 
 	// for test
@@ -407,7 +407,7 @@ void RHD_tx_buf_setup()
 				m_tx_buf[i + j] = convert_block[j];
 			}
 		}
-	}else if(sampe_mode < 3){ 
+	}else if(sampe_mode == 1){ 
 		// spike 20khz
 		for (int i = 0; i < SPIKE_TX_BUFFER_SIZE; i += SPIKE_CONVERT_FASHION_NUM)
 		{
@@ -417,8 +417,18 @@ void RHD_tx_buf_setup()
 			}
 		}
 	}
-	else{
-		// raster 10khz
+	else if(sampe_mode == 2){
+		// spike 20khz
+		for (int i = 0; i < SPIKE_TX_BUFFER_SIZE; i += SPIKE_CONVERT_FASHION_NUM)
+		{
+			for (int j = 0; j < SPIKE_CONVERT_FASHION_NUM; j++)
+			{
+				spike_m_tx_buf[i + j] = convert_block[j];
+			}
+		}
+	}
+	else if(sampe_mode == 3){
+		// raster 12.5khz
 		for (int i = 0; i < MODE_3_TX_BUFFER_SIZE; i += NUM_CHANNELS)
 		{
 			for (int j = 0; j < NUM_CHANNELS; j++)
