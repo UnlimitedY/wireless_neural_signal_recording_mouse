@@ -379,27 +379,21 @@ void timer_start()
 void RHD_tx_buf_setup()
 {
 	// comm : 0/1
-    /* channel 0-15 convert command + one dummpy command = CONVERT_FASHION_NUM (19) round-robin fashion*/
-	u16_t convert_block[CONVERT_FASHION_NUM];
+	u16_t convert_block[NUM_CHANNELS];
 	// recording: convert
 	// cconvert channels
-	for (int j = 0;j < 16;j++){
-		convert_block[j] = Convertcommand_generator(j + 8, 0);
+	for (int j = 0;j < NUM_CHANNELS;j++){
+		convert_block[j] = Convertcommand_generator(j+8, 0);
 	}
 
 	// for test
-	if(TEST_CHANNEL < 16){
+	if(TEST_CHANNEL < NUM_CHANNELS){
 		convert_block[TEST_CHANNEL] = Readcommand_generator(62);
-	}
-
-	// dummary command
-	for (int j = 16;j < sizeof(convert_block) / 2;j++){
-		convert_block[j] = Readcommand_generator(63); // 63
 	}
 
 	/* load the convert commands to tx_buf */
 	if(sampe_mode == 0){ 
-		// lfp 2khz 16 channel
+		// lfp 1khz 16 channels
 		for (int i = 0; i < LFP_TX_BUFFER_SIZE; i += CONVERT_FASHION_NUM)
 		{
 			for (int j = 0; j < CONVERT_FASHION_NUM; j++)

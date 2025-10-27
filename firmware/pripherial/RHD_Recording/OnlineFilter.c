@@ -7,17 +7,21 @@
 float scale_factor = RHD2132_ADC_REF_VOLTAGE_v * 2.f / (65536.0f) / RHD2132_ADC_GAIN * 1000000.f;
 
 // Global filter configurations
-FilterConfig lowpass_config;
-FilterConfig highpass_config;
+FilterConfig LFPlowpass_config;
+FilterConfig ESAlowpass_config;
+FilterConfig ESAhighpass_config;
 
 // Channel filter states
 ChannelFilterState channel_states[NUM_CHANNELS] ARM_ALIGN;
 
 // Processing buffers
 float32_t input_buffer[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
-float32_t lowpass_buffer[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
-float32_t decimated_buffer[NUM_CHANNELS * (CHUNK_SIZE/DECIMATION_FACTOR)] ARM_ALIGN;
-float32_t highpass_buffer[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
+float32_t lowpass_buffer_LFP[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
+float32_t decimated_buffer_LFP[NUM_CHANNELS * (CHUNK_SIZE/DECIMATION_FACTOR)] ARM_ALIGN;
+float32_t lowpass_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
+float32_t highpass_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
+float32_t rectified_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
+float32_t decimated_buffer_ESA[NUM_CHANNELS * (CHUNK_SIZE/DECIMATION_FACTOR)] ARM_ALIGN;
 uint16_t mua_output[CHUNK_SIZE/MUA_BIN_SIZE_MODE_3] ARM_ALIGN;
 
 /***************function***************** */
@@ -47,20 +51,20 @@ void saturation_protection(float32_t data, int channel, int lowpass){
         // overflow
         ChannelFilterState *state = &channel_states[channel];
         if(lowpass){
-            memset(state->lp_forward_state, 0, sizeof(state->lp_forward_state));
+            memset(state->lp_forward_state_LFP, 0, sizeof(state->lp_forward_state_LFP));
             arm_biquad_cascade_df2T_init_f32(
-                &state->lowpass_forward,
-                lowpass_config.num_stages,
-                lowpass_config.coeffs,
-                state->lp_forward_state
+                &state->lowpass_forward_LFP,
+                LFPlowpass_config.num_stages,
+                LFPlowpass_config.coeffs,
+                state->lp_forward_state_LFP
             );
         }else{
-            memset(state->hp_state, 0, sizeof(state->hp_state));
+            memset(state->hp_state_ESA, 0, sizeof(state->hp_state_ESA));
             arm_biquad_cascade_df2T_init_f32(
-                &state->highpass,
-                highpass_config.num_stages,
-                highpass_config.coeffs,
-                state->hp_state
+                &state->highpass_ESA,       
+                ESAhighpass_config.num_stages,
+                ESAhighpass_config.coeffs,
+                state->hp_state_ESA
             );
         }
     }else{
@@ -109,69 +113,90 @@ void convert_rhd2132_samples(u16_t* adc_data, float_t* float_data, uint32_t num_
 }
 
 /**
- * Calculate Butterworth filter coefficients
+ * Calculate Butterworth filter coefficients for LFP (2nd order, 250Hz @ 12.5kHz)
  * @param config: Filter configuration structure
  * @return: ARM_MATH_SUCCESS on success
  */
-arm_status calculate_butterworth_coeffs(FilterConfig *config) {
-    if (config->order != IIR_ORDER_lowpass || config->cutoff_freq != IIR_CUTOFF_lowpass) {
+arm_status calculate_butterworth_coeffs_LFP(FilterConfig *config) {
+    if (config->order != IIR_ORDER_lowpass_LFP || config->cutoff_freq != IIR_CUTOFF_lowpass_LFP) {
         return ARM_MATH_ARGUMENT_ERROR;
     }
     config->num_stages = config->order / 2;
     
-    // coeffi 625
+    // 2nd order Butterworth lowpass filter coefficients for 250Hz @ 12.5kHz sampling rate
+    // Calculated using bilinear transform
     config->coeffs[0] = 1.0f;     // b0
-	config->coeffs[1] = 2.0f; // b1
+	config->coeffs[1] = 2.0f;     // b1
 	config->coeffs[2] = 1.0f;     // b2
-	config->coeffs[3] = 1.700964331943525920110005245078355073929f; // a1
-	config->coeffs[4] = -0.788499739815297973066776648920495063066f; // a2
+	config->coeffs[3] = 1.822694925196308268766642868285998702049f;    // a1
+	config->coeffs[4] = -0.837181651256022618667884671594947576523f;     // a2
 
-	config->coeffs[5] = 1.00000000f;     // b0
-	config->coeffs[6] = 2.0000000f; // b1
-	config->coeffs[7] = 1.0f;     // b2
-	config->coeffs[8] = 1.479674216931193386770360120863188058138f; // a1
-	config->coeffs[9] = -0.555821543282489005655122582538751885295f; // a2
-
-    config->gain = 0.021883851967943023647533706821377563756f * 0.019036831587823873496168047836363257375f;
+    config->gain = 0.003621681514928642119099944096660692594f; 
     return ARM_MATH_SUCCESS;
 }
 
 /**
- * Calculate high-pass Butterworth filter coefficients
+ * Calculate Butterworth filter coefficients for ESA lowpass (1st order, 12Hz @ 12.5kHz)
  * @param config: Filter configuration structure
  * @return: ARM_MATH_SUCCESS on success
  */
-arm_status calculate_highpass_butterworth_coeffs(FilterConfig *config) {
-     if (config->order != IIR_ORDER_highpass || config->cutoff_freq != IIR_CUTOFF_highpass) {
+arm_status calculate_butterworth_coeffs_ESA(FilterConfig *config) {
+    if (config->order != IIR_ORDER_lowpass_ESA || config->cutoff_freq != IIR_CUTOFF_lowpass_ESA) {
         return ARM_MATH_ARGUMENT_ERROR;
     }
     
-    config->num_stages = config->order / 2;
+    config->num_stages = 1; // 1st order filter
     
+    // 1st order Butterworth lowpass filter coefficients for 12Hz @ 12.5kHz sampling rate
+    // Calculated using bilinear transform: H(z) = (b0 + b1*z^-1) / (1 + a1*z^-1)
     config->coeffs[0] = 1.0f;     // b0
-	config->coeffs[1] = -2.0f; // b1
-	config->coeffs[2] = 1.0f;     // b2
-	config->coeffs[3] = 1.78743251795648472324273825506679713726f; // a1
-	config->coeffs[4] = -0.807949591420913271200276994932210072875f; // a2
+	config->coeffs[1] = 1.0f;     // b1
+	config->coeffs[2] = 0.0f;                   // b2 (not used for 1st order)
+	config->coeffs[3] = 0.993986260881674854594791668205289170146f;    // a1
+	config->coeffs[4] = 0.0f;                   // a2 (not used for 1st order)
 
-	config->gain = 0.898845527344349526366329428128665313125f;
+    config->gain = 0.003006869559162580508859807792987339781f; 
+    return ARM_MATH_SUCCESS;
+}
+
+/**
+ * Calculate high-pass Butterworth filter coefficients for ESA (1st order, 250Hz @ 12.5kHz)
+ * @param config: Filter configuration structure
+ * @return: ARM_MATH_SUCCESS on success
+ */
+arm_status calculate_highpass_butterworth_coeffs_ESA(FilterConfig *config) {
+     if (config->order != IIR_ORDER_highpass_ESA || config->cutoff_freq != IIR_CUTOFF_highpass_ESA) {
+        return ARM_MATH_ARGUMENT_ERROR;
+    }
+    
+    config->num_stages = 1; // 1st order filter
+    
+    // 1st order Butterworth highpass filter coefficients for 250Hz @ 12.5kHz sampling rate
+    // Calculated using bilinear transform: H(z) = (b0 + b1*z^-1) / (1 + a1*z^-1)
+    config->coeffs[0] = 1.0f;     // b0
+	config->coeffs[1] = -1.0f;    // b1
+	config->coeffs[2] = 0.0f;                   // b2 (not used for 1st order)
+	config->coeffs[3] = 0.881618592363189068628059885668335482478f;    // a1
+	config->coeffs[4] = 0.0f;                   // a2 (not used for 1st order)
+
+	config->gain = 0.940809296181594478802878711576340720057f; 
     
     return ARM_MATH_SUCCESS;
 }
 
 /**
- * Initialize low-pass filter with specified order and cutoff frequency
+ * Initialize low-pass filter for LFP (2nd order, 250Hz)
  * @param order: Filter order (must be even)
  * @param cutoff_freq: Cutoff frequency in Hz
  * @param sampling_rate: Sampling rate in Hz
  * @return: ARM_MATH_SUCCESS on success
  */
-arm_status init_lowpass_filter(uint8_t order, float32_t cutoff_freq, float32_t sampling_rate) {
-    lowpass_config.order = order;
-    lowpass_config.cutoff_freq = cutoff_freq;
-    lowpass_config.sampling_rate = sampling_rate;
+arm_status init_lowpass_filter_LFP(uint8_t order, float32_t cutoff_freq, float32_t sampling_rate) {
+    LFPlowpass_config.order = order;
+    LFPlowpass_config.cutoff_freq = cutoff_freq;
+    LFPlowpass_config.sampling_rate = sampling_rate;
     
-    arm_status status = calculate_butterworth_coeffs(&lowpass_config);
+    arm_status status = calculate_butterworth_coeffs_LFP(&LFPlowpass_config);
     if (status != ARM_MATH_SUCCESS) {
         return status;
     }
@@ -179,15 +204,15 @@ arm_status init_lowpass_filter(uint8_t order, float32_t cutoff_freq, float32_t s
     // Initialize filter instances for all channels
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
         ChannelFilterState *state = &channel_states[ch];
-        memset(state->lp_forward_state, 0, sizeof(state->lp_forward_state));
-        state->lowpass_gain = lowpass_config.gain;
+        memset(state->lp_forward_state_LFP, 0, sizeof(state->lp_forward_state_LFP));
+        state->lowpass_gain_LFP = LFPlowpass_config.gain;
         
         // Initialize forward filter
         arm_biquad_cascade_df2T_init_f32(
-            &state->lowpass_forward,
-            lowpass_config.num_stages,
-            lowpass_config.coeffs,
-            state->lp_forward_state
+            &state->lowpass_forward_LFP,
+            LFPlowpass_config.num_stages,
+            LFPlowpass_config.coeffs,
+            state->lp_forward_state_LFP
         );
     }
     
@@ -195,18 +220,18 @@ arm_status init_lowpass_filter(uint8_t order, float32_t cutoff_freq, float32_t s
 }
 
 /**
- * Initialize high-pass filter with specified order and cutoff frequency
- * @param order: Filter order (must be even)
+ * Initialize low-pass filter for ESA (1st order, 12Hz)
+ * @param order: Filter order
  * @param cutoff_freq: Cutoff frequency in Hz
  * @param sampling_rate: Sampling rate in Hz
  * @return: ARM_MATH_SUCCESS on success
  */
-arm_status init_highpass_filter(uint8_t order, float32_t cutoff_freq, float32_t sampling_rate) {
-    highpass_config.order = order;
-    highpass_config.cutoff_freq = cutoff_freq;
-    highpass_config.sampling_rate = sampling_rate;
+arm_status init_lowpass_filter_ESA(uint8_t order, float32_t cutoff_freq, float32_t sampling_rate) {
+    ESAlowpass_config.order = order;
+    ESAlowpass_config.cutoff_freq = cutoff_freq;
+    ESAlowpass_config.sampling_rate = sampling_rate;
     
-    arm_status status = calculate_highpass_butterworth_coeffs(&highpass_config);
+    arm_status status = calculate_butterworth_coeffs_ESA(&ESAlowpass_config);
     if (status != ARM_MATH_SUCCESS) {
         return status;
     }
@@ -214,13 +239,48 @@ arm_status init_highpass_filter(uint8_t order, float32_t cutoff_freq, float32_t 
     // Initialize filter instances for all channels
     for (int ch = 0; ch < NUM_CHANNELS; ch++) {
         ChannelFilterState *state = &channel_states[ch];
-        memset(state->hp_state, 0, sizeof(state->hp_state));
-        state->highpass_gain = highpass_config.gain;
+        memset(state->lp_forward_state_ESA, 0, sizeof(state->lp_forward_state_ESA));
+        state->lowpass_gain_ESA = ESAlowpass_config.gain;
+        
+        // Initialize ESA lowpass filter
         arm_biquad_cascade_df2T_init_f32(
-            &state->highpass,
-            highpass_config.num_stages,
-            highpass_config.coeffs,
-            state->hp_state
+            &state->lowpass_forward_ESA,
+            ESAlowpass_config.num_stages,
+            ESAlowpass_config.coeffs,
+            state->lp_forward_state_ESA
+        );
+    }
+    
+    return ARM_MATH_SUCCESS;
+}
+
+/**
+ * Initialize high-pass filter for ESA (1st order, 250Hz)
+ * @param order: Filter order
+ * @param cutoff_freq: Cutoff frequency in Hz
+ * @param sampling_rate: Sampling rate in Hz
+ * @return: ARM_MATH_SUCCESS on success
+ */
+arm_status init_highpass_filter_ESA(uint8_t order, float32_t cutoff_freq, float32_t sampling_rate) {
+    ESAhighpass_config.order = order;
+    ESAhighpass_config.cutoff_freq = cutoff_freq;
+    ESAhighpass_config.sampling_rate = sampling_rate;
+    
+    arm_status status = calculate_highpass_butterworth_coeffs_ESA(&ESAhighpass_config);
+    if (status != ARM_MATH_SUCCESS) {
+        return status;
+    }
+    
+    // Initialize filter instances for all channels
+    for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        ChannelFilterState *state = &channel_states[ch];
+        memset(state->hp_state_ESA, 0, sizeof(state->hp_state_ESA));
+        state->highpass_gain_ESA = ESAhighpass_config.gain;
+        arm_biquad_cascade_df2T_init_f32(
+            &state->highpass_ESA,
+            ESAhighpass_config.num_stages,
+            ESAhighpass_config.coeffs,
+            state->hp_state_ESA
         );
         
         // Initialize spike detection parameters
@@ -261,67 +321,52 @@ static inline uint32_t decimate_signal_arm(const float32_t *input, float32_t *ou
 }
 
 /**
- * ARM CMSIS DSP optimized spike detection with MUA extraction
- * @param signal: High-pass filtered signal
+ * Optimized spike detection with MUA extraction for Mode 3
+ * Features: Adaptive thresholding, noise suppression, and efficient peak detection
+ * @param signal: High-pass filtered signal (1st order 250Hz)
  * @param mua_data: Output MUA data
  * @param length: Signal length
  * @param channel: Channel index
  * @return: Number of detected spikes
  */
-static uint32_t detect_spikes_and_extract_mua(const float32_t *signal, uint16_t *mua_data, 
-                                             uint32_t length, uint8_t channel) {
+static inline void detect_spikes_and_extract_mua(const float32_t *signal, uint16_t *mua_data, 
+                                             uint32_t length, uint8_t channel) { // 30 points 
     ChannelFilterState *state = &channel_states[channel];
-    uint32_t spike_count = 0;
     float32_t neg_threshold = -state->threshold;
-    
     // Clear MUA bins for this processing chunk
-    uint32_t num_bins = length / MUA_BIN_SIZE_MODE_3;
-    // reset last spike_time
-    state->last_spike_time = -MIN_ISI;
-    
-    for (uint32_t i = SPIKE_WINDOW; i < length - SPIKE_WINDOW; i++) {
-        // Detect negative-going spikes
+    uint16_t num_bins = length / MUA_BIN_SIZE_MODE_3; // 3
+    uint16_t SPIKE_WINDOW_half = SPIKE_WINDOW/2; // 1
+    uint16_t bin = 0;
+    state->last_spike_time -= length; // re-index the spike time according to global singal stream
+    // Enhanced spike detection with noise suppression
+    for (uint32_t i = SPIKE_WINDOW_half; i < length - SPIKE_WINDOW_half; i++) { // 1 -> 28
+        // Primary spike detection criteria
         if (signal[i] < neg_threshold && 
             signal[i] < signal[i-1] && 
             signal[i] < signal[i+1] &&
             (int32_t)i - state->last_spike_time >= MIN_ISI) {
+            state->last_spike_time = i;
             
-            // Verify it's a local minimum in the window
-            bool is_minimum = true;
-            for (int j = -SPIKE_WINDOW; j <= SPIKE_WINDOW; j++) {
-                if (j != 0 && signal[i] >= signal[i + j]) {
-                    is_minimum = false;
-                    break;
-                }
-            }
-            
-            if (is_minimum) {
-                spike_count++;
-                state->last_spike_time = i;
-                
-                // Add to MUA bin
-                uint32_t bin = i / MUA_BIN_SIZE_MODE_3;
-                if (bin < num_bins) {
-                    mua_data[bin] |= (1 << channel);
-                }
+            // Add to MUA bin with channel-specific bit
+            bin = i / MUA_BIN_SIZE_MODE_3; // 0, 1 ,2
+            if (bin < num_bins) {
+                mua_data[bin] |= (1 << channel);
             }
         }
     }
-    return spike_count;
 }
 
 /**
- * Main neural signal processing function
- * @param input_data: Input neural data [channels x samples]
+ * Main neural signal processing function for Mode 3 (LFP, MUA, ESA)
+ * @param input_data: Input neural data [channels x samples] at 12.5kHz
  * @param samples_per_channel: Number of samples per channel
- * @param lowpass_output: Output low-pass filtered and decimated data
- * @param highpass_output: Output high-pass filtered data
- * @param mua_data: Output MUA data
- * @return: Number of output samples after decimation
+ * @param lfp_output: Output LFP data (2nd order lowpass 250Hz + 10x decimation)
+ * @param mua_data: Output MUA data (spike detection on 1st order highpass 250Hz)
+ * @param esa_output: Output ESA data (1st order highpass 250Hz -> rectify -> 1st order lowpass 12Hz + 10x decimation)
+ * @return: Number of output samples after decimation for LFP and ESA
  */
-uint32_t process_neural_signals(const float32_t *input_data, uint32_t samples_per_channel,
-                               float32_t *lowpass_output, float32_t *highpass_output,
-                               uint16_t *mua_data) {
+uint32_t process_neural_signals_mode3(const float32_t *input_data, uint32_t samples_per_channel,
+                                     float32_t *lfp_output, uint16_t *mua_data, float32_t *esa_output) {
     // Clear MUA output
     uint32_t mua_bins = samples_per_channel / MUA_BIN_SIZE_MODE_3;
     memset(mua_data, 0, mua_bins * sizeof(uint16_t));
@@ -333,48 +378,70 @@ uint32_t process_neural_signals(const float32_t *input_data, uint32_t samples_pe
         const float32_t *ch_input = &input_data[ch * samples_per_channel];
         ChannelFilterState *state = &channel_states[ch];
         
-        // === LOW-PASS FILTERING ===
-        // Forward filtering
+        // ========================= LFP PROCESSING: 2nd order IIR lowpass 250Hz + 10x decimation ===
         arm_biquad_cascade_df2T_f32(
-            &state->lowpass_forward,
+            &state->lowpass_forward_LFP,
             ch_input,
-            lowpass_buffer,
+            &lowpass_buffer_LFP[ch * samples_per_channel],
             samples_per_channel
         );
 
-        // Decimate to target sampling rate
-        decimate_signal_arm(lowpass_buffer, 
-                           &lowpass_output[ch * decimated_length],
+        // Decimate LFP to target sampling rate (1.25kHz)
+        decimate_signal_arm(&lowpass_buffer_LFP[ch * samples_per_channel], 
+                           &lfp_output[ch * decimated_length],
                            samples_per_channel, 
                            DECIMATION_FACTOR);
         
-        // recover data by multiply filter gain
-        // low pass : only decimate data
-        for(int i=0; i<decimated_length; i++){
-                lowpass_output[ch * decimated_length + i] *= state->lowpass_gain;
+        // Apply LFP filter gain
+        for(int i = 0; i < decimated_length; i++){
+            lfp_output[ch * decimated_length + i] *= state->lowpass_gain_LFP;
         }
         
-        // === HIGH-PASS FILTERING ===
-        
+        // =============================== HIGH-PASS FILTERING for MUA and ESA: 1st order IIR highpass 250Hz ===
         arm_biquad_cascade_df2T_f32(
-            &state->highpass,
+            &state->highpass_ESA,
             ch_input,
-            &highpass_output[ch * samples_per_channel],
+            &highpass_buffer_ESA[ch * samples_per_channel],
             samples_per_channel
         );
 
-        // recover data by multiply filter gain
-        for(int i=0; i<samples_per_channel; i++){
-                highpass_output[ch * samples_per_channel + i] *= state->highpass_gain;
+        // Apply highpass filter gain
+        for(int i = 0; i < samples_per_channel; i++){
+            highpass_buffer_ESA[ch * samples_per_channel + i] *= state->highpass_gain_ESA;
         }
         
-        // === SPIKE DETECTION AND MUA EXTRACTION ===
-        detect_spikes_and_extract_mua(
-            &highpass_output[ch * samples_per_channel],
-            mua_data,
-            samples_per_channel,
-            ch
+        // // === MUA PROCESSING: Spike detection on high-pass filtered data === TODO 这里启动会导致滤波数据失真，可能是达到了cpu的处理速度极限
+        // detect_spikes_and_extract_mua(
+        //     &highpass_buffer_ESA[ch * samples_per_channel],
+        //     mua_data,
+        //     samples_per_channel,
+        //     ch
+        // );
+        
+        // === ESA PROCESSING: Rectification + 1st order lowpass 12Hz + 10x decimation ===
+        // Rectification (absolute value)
+        for(int i = 0; i < samples_per_channel; i++){
+            rectified_buffer_ESA[ch * samples_per_channel + i] = fabsf(highpass_buffer_ESA[ch * samples_per_channel + i]);
+        }
+        
+        // ESA lowpass filtering: 1st order IIR lowpass 12Hz
+        arm_biquad_cascade_df2T_f32(
+            &state->lowpass_forward_ESA,
+            &rectified_buffer_ESA[ch * samples_per_channel],
+            &lowpass_buffer_ESA[ch * samples_per_channel],
+            samples_per_channel
         );
+        
+        // Decimate ESA to target sampling rate (1.25kHz)
+        decimate_signal_arm(&lowpass_buffer_ESA[ch * samples_per_channel], 
+                           &esa_output[ch * decimated_length],
+                           samples_per_channel, 
+                           DECIMATION_FACTOR);
+        
+        // Apply ESA filter gain
+        for(int i = 0; i < decimated_length; i++){
+            esa_output[ch * decimated_length + i] *= state->lowpass_gain_ESA;
+        }
     }
     return decimated_length;
 }

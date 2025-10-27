@@ -15,9 +15,6 @@
 // for debugging
 #include <zephyr/logging/log.h>
 #include <string.h>
-// // for RTC timestamp
-// #include <zephyr/drivers/counter.h>
-// #include <zephyr/drivers/rtc.h>
 // for DSP
 #include "..\RHD_Recording\OnlineFilter.h"
 
@@ -29,6 +26,19 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 typedef unsigned char u8_t;
 typedef unsigned short u16_t;
 typedef unsigned int u32_t;
+
+/*
+* Recording channels number
+* mode0 : 16 channels lfp 1Khz recording
+* mode1 : 16 channel spike 20Khz recording; single raw data + 16 MUA
+* mode2 : 4 channel 20Khz raw data;
+* mode3 : 16 channel ESA recording; 1Khz (downsampling from 12.5Khz) + MUA
+*/
+#define Channel_recorded 16
+#define Channel_recorded_spike 16 // selected channel indices <= Channel_recorded
+u8_t raw_channel[Channel_recorded_spike] = {0, 1, 2, 3, 4, 5, 6, 7 ,8 ,9 ,10 ,11 ,12 ,13 ,14 ,15}; 
+u8_t recorded_channel_num = Channel_recorded_spike; // default: enable all channels
+
 // nrf_gpio_pin_control_select
 /*
  * extern marco define and struct define
@@ -36,22 +46,13 @@ typedef unsigned int u32_t;
 u16_t init_tx_buf[1];
 u16_t init_rx_buf[1];
 
-
+/***********************mode0********************* */
 // for LFP 16 channels raw data
 u16_t m_tx_buf[LFP_TX_BUFFER_SIZE];
 u16_t m_rx_buf[2][LFP_RX_BUFFER_SIZE];
 
 u16_t channel_array_t[SAMPLE_POINT_NUM * time_window];
-u16_t channel_array[16][SAMPLE_POINT_NUM * time_window];
-
-// for spike 
-u16_t spike_m_tx_buf[SPIKE_TX_BUFFER_SIZE]; 
-u16_t spike_m_rx_buf[2][SPIKE_RX_BUFFER_SIZE]; 
-
-u16_t spike_channel_array_t[SPIKE_SAMPLE_POINT_NUM * time_window];
-u16_t spike_channel_array[16][SPIKE_SAMPLE_POINT_NUM * time_window];	
-
-u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE) * time_window]; 
+u16_t channel_array[Channel_recorded][SAMPLE_POINT_NUM * time_window];
 
 /***********************mode3********************* */
 u16_t mode_3_m_tx_buf[MODE_3_TX_BUFFER_SIZE]; // ppi convert command; /**< TX buffer. */
@@ -59,6 +60,16 @@ u16_t mode_3_m_rx_buf[2][MODE_3_RX_BUFFER_SIZE]; /*< RX buffer. double buffer >*
 
 u16_t mode_3_array_t[MODE_3_SPI_RX_BUF_SIZE];
 u16_t mode_3_array_lfp_t[MODE_3_LFP_SIZE];
+u16_t mode_3_array_esa_t[MODE_3_ESA_SIZE];
+
+/***********************mode1, 2 spike********************* */
+u16_t spike_m_tx_buf[SPIKE_TX_BUFFER_SIZE]; 
+u16_t spike_m_rx_buf[2][SPIKE_RX_BUFFER_SIZE]; 
+
+u16_t spike_channel_array_t[SPIKE_SAMPLE_POINT_NUM * time_window];
+u16_t spike_channel_array[Channel_recorded_spike][SPIKE_SAMPLE_POINT_NUM * time_window];	
+
+u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE) * time_window]; 
 
 // spi instance init
 const nrfx_spim_t spi = NRFX_SPIM_INSTANCE(SPI_INSTANCE);
@@ -70,27 +81,35 @@ u16_t RHD_command = 0x00ff;
 
 const u16_t NINE_DUMMPY[9] = {0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff, 0x00ff};
 
+// low power
+const u16_t Register_config_lowpower[18] = {Register0_disable, lfp_Register1, lfp_Register2, lfp_Register3, lfp_Register4, 
+                                        lfp_Register5, lfp_Register6, lfp_Register7, lfp_Register8, lfp_Register9, lfp_Register10, 
+                                        lfp_Register11, lfp_Register12, lfp_Register13, lfp_Register14, lfp_Register15, 
+                                        lfp_Register16, lfp_Register17};
+/////////////////////////////////////// 1Khz sampling rate                                       
+// mode 0
 const u16_t Register_config_lfp[18] = {lfp_Register0_enable, lfp_Register1, lfp_Register2, lfp_Register3, lfp_Register4, 
                                         lfp_Register5, lfp_Register6, lfp_Register7, lfp_Register8, lfp_Register9, lfp_Register10, 
                                         lfp_Register11, lfp_Register12, lfp_Register13, lfp_Register14, lfp_Register15, 
                                         lfp_Register16, lfp_Register17};
 
-const u16_t Register_config_lowpower[18] = {Register0_disable, lfp_Register1, lfp_Register2, lfp_Register3, lfp_Register4, 
-                                        lfp_Register5, lfp_Register6, lfp_Register7, lfp_Register8, lfp_Register9, lfp_Register10, 
-                                        lfp_Register11, lfp_Register12, lfp_Register13, lfp_Register14, lfp_Register15, 
-                                        lfp_Register16, lfp_Register17};
-
+/////////////////////////////////////// 20Khz sampling rate  
+// mode 1
 const u16_t Register_config_spike[18] = {spike_Register0_enable, spike_Register1, spike_Register2, spike_Register3, spike_Register4, 
                                         spike_Register5, spike_Register6, spike_Register7, spike_Register8, spike_Register9, 
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
                                         spike_Register15, spike_Register16, spike_Register17};
-
-const u16_t Register_config_spike_raw[18] = {spike_Register0_enable, spike_mode2_Register1, spike_mode2_Register2, spike_Register3, spike_raw_Register4, 
+// mode 2
+const u16_t Register_config_spike_raw[18] = {spike_Register0_enable, spike_Register1, spike_Register2, spike_Register3, 
+        spike_raw_Register4, 
                                         spike_Register5, spike_Register6, spike_Register7, spike_Register8, spike_Register9, 
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
                                         spike_Register15, spike_Register16, spike_Register17};
 
-const u16_t Register_config_mode3[18] = {spike_Register0_enable, spike_mode3_Register1, spike_mode3_Register2, spike_Register3, spike_raw_Register4, 
+/////////////////////////////////////// 12.5Khz sampling rate  
+// mode 3
+const u16_t Register_config_mode3[18] = {spike_Register0_enable, 
+        spike_mode3_Register1, spike_mode3_Register2, spike_Register3, spike_mode3_Register4, 
                                         spike_Register5, spike_Register6, spike_Register7, spike_Register8, spike_Register9, 
                                         spike_Register10, spike_Register11, spike_Register12, spike_Register13, spike_Register14, 
                                         spike_Register15, spike_Register16, spike_Register17};
@@ -103,9 +122,8 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 /********************************Sample rate**********************************/
 bool mode_switch_flag = false; 
 
-//TODO
-u16_t sampe_mode = 0; // 0: lfp; 1: one channel raw data + raster; 2: spike with 4 channel raw data with lfp : default mode
-uint32_t timer_period = 50; // 2k Hz: 26.32; [lasting 26 * 19 * 7 = 3456us = 3.456ms per package] default value
+u16_t sampe_mode = 3; // default mode0
+uint32_t timer_period = 50; // default value 
 uint32_t reset_ticks_value = SPI_RX_BUF_SIZE;
 
 volatile bool spi_buff_flag = false;
@@ -162,29 +180,22 @@ uint32_t packet_sent_counter[2] = {0, 0}; // success ; fail ; flag
 
 bool overflow_signal = 0;
 bool sensor_update_flag = 0;
-u8_t HABITS_events = 0;
 uint64_t stamp_check = 0;
 
-u8_t raw_channel[16] = {0, 1, 2, 3, 4, 5, 6, 7 ,8 ,9 ,10 ,11 ,12 ,13 ,14 ,15}; 
-u8_t recorded_channel_num = 16; // default: all channels enable all channels ; mode 0
-
+// fixed for mode 2
 static u8_t data_size_per_channel_packets = 30; // SPIKE_SAMPLE_POINT_NUM / 3packets == 90 / 3 == 30
 u16_t temp_spike_channel_array[120]; // data_size_per_channel_packets * 4 channels == 120
-
-
 u8_t spike_raw_channel[4] = {0, 1, 2, 3}; // mode 2
 
+// selectable for mode 1
 u8_t recorded_spike_channel = 0; // default: enable channel 0; mode 1
 
-// neural recording 
-u8_t channel_16_order[CONVERT_FASHION_NUM] = {18, 19, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}; // rx_buf retrievial order; > 16 is dummary results
-u8_t channel_16_order_spike[SPIKE_CONVERT_FASHION_NUM] = {14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}; // rx_buf retrievial order; > 16 is dummary results
-
+// neural recording for mode 0
+u8_t channel_order[Channel_recorded] = {14, 15, 0, 1, 2, 3, 4, 5, 6, 7 ,8 ,9 ,10 ,11 ,12 ,13}; 
+u8_t channel_order_spike[Channel_recorded_spike] = {14, 15, 0, 1, 2, 3, 4, 5, 6, 7 ,8 ,9 ,10 ,11 ,12 ,13}; 
 /********************************sensor setup**********************************/
-// const struct device *lc_twim = DEVICE_DT_GET(DT_NODELABEL(i2c0));
 const nrfx_twim_t lc_twim = NRFX_TWIM_INSTANCE(LC_INSTANCE_ID);
 const nrfx_spim_t lsm_spi = NRFX_SPIM_INSTANCE(LSM_INSTANCE_ID);
-
 uint8_t twimWriteDataBuffer[TWI_MAX_NUM_TX_BYTES];
 uint8_t LCDataBuffer[6];
 
@@ -195,7 +206,6 @@ uint8_t advise_channel = 0;
 uint8_t rf_channel_list[rf_channel_num] = {2, 17, 33, 50, 67, 84}; // aviod conflict with WiFi
 uint8_t rf_channel_rssi_list[rf_channel_num] = {0};
 
-// uint16_t data[CONFIG_ESB_MAX_PAYLOAD_LENGTH/2]; /**< The payload data. */
 struct esb_payload rx_payload; // command & behavioral events --rx
 struct esb_payload tx_payload; // neural signal -- tx
 
@@ -204,6 +214,7 @@ struct esb_payload timestamp_payload; // neural signal alignment required
 
 u32_t last_statistic_timestamp;
 uint8_t sample_watch_dog = 0;
+
 /***********************************TWI Setup function******************************************/
 /*
 * 通过IMU来读取一定sample rate的3轴数据，在单次包的发送中，将该数据放入并一起发送到上位机；
@@ -281,6 +292,8 @@ void setup_sensor(void){ // 注意，nrf 通过内部上拉来驱动 lsm 会导�
 	}
 	// 50mAH capacity ;
 	LC_init();
+        // charge indiciator init
+        Charging_stats_init();
 }
 
 void LSM6DS3_Read(void){ // only recording 3-axis
@@ -299,40 +312,44 @@ void LSM6DS3_Read(void){ // only recording 3-axis
 void BatteryPower_Temp_Read(u16_t *data){ // not used
 	// RSOC
 	LC_getRSOC(data); // 0-100%
-
 	// charging_stat
 	Charging_PG_PG_STAT_get(data + 1);
-
-	// temp of battery
-        // LC_getTemperature(data + 2); // * 0.1k
-
         // battery_voltage
         LC_getCellVoltage(data + 2);
 }
 
 /************************** main-used function **************************************/
 int filter_init(float threshold_default){
-         // Initialize 4th order low-pass filter at 300Hz
         arm_status status;
-        status = init_lowpass_filter(IIR_ORDER_lowpass, IIR_CUTOFF_lowpass, ORIGINAL_FS);
+        //////////////////////// For LFP 2 order IIR low pass filter Fc = 250Hz
+        status = init_lowpass_filter_LFP(IIR_ORDER_lowpass_LFP, IIR_CUTOFF_lowpass_LFP, ORIGINAL_FS);
         if (status != ARM_MATH_SUCCESS) {
-                LOG_INF("Error: Low-pass filter initialization failed\n");
+                LOG_INF("Error: LFP low-pass filter initialization failed\n");
+                return -1;
+        }
+        
+        //////////////////////// For ESA
+         // Initialize 1th order low-pass filter at 12Hz
+        status = init_lowpass_filter_ESA(IIR_ORDER_lowpass_ESA, IIR_CUTOFF_lowpass_ESA, ORIGINAL_FS);
+        if (status != ARM_MATH_SUCCESS) {
+                LOG_INF("Error: ESA Low-pass filter initialization failed\n");
                 return -1;
         }
         
         // Initialize 4th order high-pass filter at 300Hz
-        status = init_highpass_filter(IIR_ORDER_highpass, IIR_CUTOFF_highpass, ORIGINAL_FS);
+        status = init_highpass_filter_ESA(IIR_ORDER_highpass_ESA, IIR_CUTOFF_highpass_ESA, ORIGINAL_FS);
         if (status != ARM_MATH_SUCCESS) {
-                LOG_INF("Error: High-pass filter initialization failed\n");
+                LOG_INF("Error: ESA High-pass filter initialization failed\n");
                 return -1;
         }
 
         // Set spike detection thresholds
-        for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+        for (int ch = 0; ch < NUM_CHANNELS; ch++) { 
                 set_spike_threshold(ch, threshold_default); // Varying thresholds, default; -100uV
         }
+        LOG_INF("Filter initialization completed successfully\n");
+        return 0;
 }
-
 
 u16_t init_everything(void){
         /*************LED setup***************/
@@ -385,29 +402,24 @@ u16_t init_everything(void){
 
 u16_t init_RHD(){
         rhdspi_init();
-        if(sampe_mode == 0){
-                // lfp 1khz : 3458us -> 7 ms one packet
-                /*
-                * 注意： 使用lfp 2khz 需要保证数据的发送经可能 快，以免休眠时间不够 （在3.1ms下，最多只能发送一个包，少量重发）
-                优先使用1khz 采样 (在7ms 内，发送3个包以内可以保证15mw功率)
-                */
-                timer_period = 50; // 注意： 使用50us 一次spi，配合16 + 4 dummy sample sequence，可以实现1KHz的精准采样
+        if(sampe_mode == 0){// 1.25Khz 16 channels: xx ms per packets keep the same ESB rate with mode3
+                // timer_period: 1000 / sample rate (KHz) / Channel_num 
+                timer_period = 1000 / 1.25 / Channel_recorded;
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
                 
-        }else if(sampe_mode == 1){
-                // spike 20833Hz (0 dummy) : 4320 us -> ~4.3 ms one packet
-                timer_period = 3; // 5: 12500 Hz ; 6: 10417 Hz ;  3: 20833 Hz; 4: 15625 Hz (0 dummy)
+        }else if(sampe_mode == 1){ // 20Khz 16 channels: xx ms per packets
+                timer_period = 1000 / 20 / Channel_recorded_spike; // 5: 12500 Hz ; 6: 10417 Hz ;  3: 20833 Hz; 4: 15625 Hz (0 dummy)
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike);
         }else if(sampe_mode == 2){ 
                 // spike 20khz 4 channels
-                timer_period = 3; 
+                timer_period = 1000 / 20 / Channel_recorded_spike;
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike_raw);
         }else if(sampe_mode == 3){
                 // spike 12.5khz + 1.25khz lfp 6 ms
-                timer_period = 5; 
+                timer_period = 1000 / 12.5 / Channel_recorded; 
                 reset_ticks_value = MODE_3_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_mode3);
         }
@@ -472,7 +484,7 @@ void structure_rx_data(){
                         for(int j=0 ; j<spi_overflow_flag ; j++){
                                 spike_m_rx_buf[spi_buff_flag][j] = spike_m_rx_buf[!spi_buff_flag][SPIKE_SPI_TX_BUF_SIZE + j];
                         } 
-                }else{ // raster 10khz + lfp：
+                }else{ // raster 12.5khz + lfp：
                         for(int j=0 ; j<spi_overflow_flag ; j++){
                                 mode_3_m_rx_buf[spi_buff_flag][j] = mode_3_m_rx_buf[!spi_buff_flag][MODE_3_SPI_TX_BUF_SIZE + j];
                         } 
@@ -486,9 +498,9 @@ void structure_rx_data(){
                         for (u16_t u = 0; u < CONVERT_FASHION_NUM; u++)
                         {
                                 // 2 steps delay converted result
-                                if (channel_16_order[u] < 16)
+                                if (channel_order[u] < Channel_recorded)
                                 {       
-                                        channel_array[channel_16_order[u]][g] = m_rx_buf[!spi_buff_flag][CONVERT_FASHION_NUM * g + u];
+                                        channel_array[channel_order[u]][g] = m_rx_buf[!spi_buff_flag][CONVERT_FASHION_NUM * g + u];
                                 }
                         }
                 } // channel_array shape is 16 * 100 u16_t ; 
@@ -498,19 +510,19 @@ void structure_rx_data(){
                         for (u16_t u = 0; u < SPIKE_CONVERT_FASHION_NUM; u++)
                         {
                                 // 2 steps delay converted result
-                                if (channel_16_order_spike[u] < 16)
+                                if (channel_order_spike[u] < Channel_recorded_spike)
                                 {       
-                                        spike_channel_array[channel_16_order_spike[u]][g] = spike_m_rx_buf[!spi_buff_flag][SPIKE_CONVERT_FASHION_NUM * g + u];
+                                        spike_channel_array[channel_order_spike[u]][g] = spike_m_rx_buf[!spi_buff_flag][SPIKE_CONVERT_FASHION_NUM * g + u];
                                 }
                         }
                 } // channel_array shape is 16 * 100 u16_t ; 
-        }else{ // raster + lfp 10khz
+        }else{ // raster + lfp 12.5khz
                 for (u16_t P_size = 0; P_size < CHUNK_SIZE; P_size++) // loop 48 times
                 {       // 48 sample points each channel
                         for (u16_t ch = 0; ch < NUM_CHANNELS; ch++)
                         {
                                 // 2 steps delay converted result
-                                if (channel_16_order_spike[ch] < 16)
+                                if (channel_order[ch] < Channel_recorded)
                                 {       
                                         mode_3_array_t[ch * CHUNK_SIZE + P_size] = mode_3_m_rx_buf[!spi_buff_flag][NUM_CHANNELS * P_size + ch];
                                 }
@@ -520,7 +532,7 @@ void structure_rx_data(){
         }
 }
 
-/*
+/*   Mode 1
 * spike detection algorithm--- v0.1 only consider the noise level and get the threshold from it
 * 整体的思路是: 首先将所有的sample 值大于threshold的得到index值，之后通过记录上升沿的spike来作为spike 的timestamp
 * 之后去掉ISI 小于2ms的spike 和在这一段数据中边缘的过短的spike；最终得到spike 的timestamp
@@ -653,13 +665,17 @@ void get_MUA_data(u16_t channel_num)
 	}
 }
 
+/**
+ * Other Functions
+ * 
+ */
 void running_time_offset(uint8_t test){
         LOG_INF("%u us running time! %d test \n", k_cyc_to_us_floor32(k_cycle_get_32()) - timerecording, test);
 }
 void running_time_onset(void){
         timerecording = k_cyc_to_us_floor32(k_cycle_get_32());
 }
-
+// 这个导致延迟难以预测，对后续的时间延迟建模不友好
 int dynamic_retransmit(void){
         /* 
         * 动态改变重发次数：(根据发送 （失败)/(失败 + 成功) 的比率)
@@ -692,7 +708,7 @@ int dynamic_retransmit(void){
                 // 确定是否 需要暂停
                 if(sample_watch_dog > 100){ // 100s
                         esb_set_retransmit_count(1);
-                        // sample_switch = false;
+                        sample_switch = false;
                         sample_watch_dog = 0;
                 }      
 
@@ -774,7 +790,7 @@ int main(void)
                         nrfx_gpiote_out_task_enable(&gpiote_instance, NRFX_SPIM_SS_PIN);
                         nrfx_gpiote_out_set(&gpiote_instance, NRFX_SPIM_SS_PIN); // reset the CS line to disable
                         /* filter */
-                        filter_init(100.f); // 这里设定的是uV值，在实际的设置中会自动根据 filter的放缩进行放缩
+                        filter_init(50.f); // 这里设定的是uV值，在实际的设置中会自动根据 filter的放缩进行放缩
                         /* IMU init */
                         IMU_mode_switch();
                         
@@ -784,21 +800,14 @@ int main(void)
                         overflow_signal = !overflow_signal;
                         RHD_tx_buf_setup();
                         
-                        // for timestamp alignment
-                                // 注意： nrf 本身的时钟存在误差：大约在每半分钟，慢1ms，可能通过拟合函数来校正，或者其他的时间对齐方案
-                                // set retransimit count to 0 保证时间延迟的稳定性 
-                                //  时间延迟有多少还需要通过有线的方式来测试：理论上：ramp up：140us；其余处理 几百us，延时可能在1ms以内
-                                // 也可以通过 数据特征和事件来做定义
+                        // timestamp alignment
                         if(!mode_switch_flag){ // normal 
                                 while(!esb_is_idle()){};
                                 packet_sent_counter[1] = 0; // clear the esb fail flag
-                                // rf_channel = esb_rf_channel_scan(); 
                                 rf_channel = 5; // TODO selected channel: using default : 84
                                 // 保证 在下位机到中继端的时间延迟最小
                                 k_sleep(K_MSEC(1000));
-                                // LED_hinting(500, 3); // 等待 1s来保证 中继的rx buffer被清空，保证uart的buffer被上位机清空
                                 esb_flush_tx();
-                               
                                 esb_set_retransmit_count(0);
                                 err = timestamp_payload_wrap();
                                 while(!esb_is_idle()){};
@@ -807,7 +816,6 @@ int main(void)
                                         // failed 
                                         packet_sent_counter[1] = 0;
                                         esb_flush_tx();
-
                                         // use next adv channel
                                         advise_channel++;
                                         if(advise_channel >= sizeof(rf_channel_list)){
@@ -816,10 +824,7 @@ int main(void)
                                         esb_set_rf_channel(rf_channel_list[advise_channel]);
                                         err = timestamp_payload_wrap();
                                         while(!esb_is_idle()){};
-                                        
                                 }
-                                // LED_hinting(100, 5);
-
                                 // select the esb params
                                 esb_set_retransmit_count(1);  // 2 比较稳定
                                 esb_set_rf_channel(rf_channel_list[rf_channel]);
@@ -856,8 +861,6 @@ int main(void)
                         packet_timestamp = k_uptime_get_32(); // ms CONFIG_SYS_CLOCK_TICKS_PER_SEC depend the time resolution
                         timestamp_LTNSRS = packet_timestamp;
                         
-                        dynamic_retransmit(); // 必须放在packet_timestamp 更新之后
-                        
                 /*** 0.1. imu lc data read ***/
                         // 注意： memset 效率不高这个memset 函数
                         if(packet_timestamp - packets_counter >= 10){ // ~ 100Hz imu 
@@ -872,7 +875,7 @@ int main(void)
                         
                 /*** 2. spike detection : MUA data ***/
                         if(sampe_mode == 1){ // cost 1648 us : 1.6ms in 17khz 16 channels
-                                for (u16_t mua = 0; mua < 16; mua++)
+                                for (u16_t mua = 0; mua < Channel_recorded_spike; mua++)
 				{	
                                         get_MUA_data(mua);
                                 }
@@ -880,13 +883,16 @@ int main(void)
                 /*** 2.1 online filtering mode 3  ***/
                         if(sampe_mode == 3){
                                 // ~ 1100 us : 10Khz
-                                process_neural_signals(input_buffer, CHUNK_SIZE, decimated_buffer, highpass_buffer, mua_output);
-                                convert_rhd2132_samples(mode_3_array_lfp_t, decimated_buffer, MODE_3_LFP_SIZE, Filter_scale, 0);
+                                process_neural_signals_mode3(input_buffer, CHUNK_SIZE, 
+                                                                                    decimated_buffer_LFP, mua_output, decimated_buffer_ESA);
+                                // Convert LFP & ESA data from float to uint16 for transmission
+                                convert_rhd2132_samples(mode_3_array_lfp_t, decimated_buffer_LFP, MODE_3_LFP_SIZE, Filter_scale, 0);
+                                convert_rhd2132_samples(mode_3_array_esa_t, decimated_buffer_ESA , MODE_3_LFP_SIZE, Filter_scale, 0);
                         }
                 /*** 3. ESB package organization ***/ 
                         if(sampe_mode == 0){ // lfp 
                                 // means if the fifo is full, the newest packets will not be added to fifo
-                                err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*recorded_channel_num));
+                                err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*CONVERT_FASHION_NUM));
                                 // cost 30 us in nrf-52840 to wrap one package with 96 u16_t data
 
                         }else if(sampe_mode == 1){ // spike: one channel raw data + raster
@@ -896,7 +902,6 @@ int main(void)
                         }else if(sampe_mode == 2){
                                 /* send other sensor data */
                                 // err = spike_sensor_tx_payload_wrap(imu_data, lc_data);
-
                                 /* here send 4 channel spike raw data with lfp in 3 packets, without spike online detection */
                                 for (int packets_nu = 0 ; packets_nu < 3; packets_nu++){ // 3 packets
                                         for(int ch=0;ch<4;ch++){ // 4 channels
@@ -908,9 +913,10 @@ int main(void)
                                         err = spike_multi_tx_payload_wrap(temp_spike_channel_array, sizeof(temp_spike_channel_array)/2, spike_raw_channel, (u8_t)packets_nu);
                                         k_sleep(K_USEC(435)); // 用来保证 数据传输接受会按照先后顺序
                                 }
-                        }else if(sampe_mode == 3){ // TODO Threshold update : 将mode1 和mode3的threshold 联合在一起并检查这个threshold的准确性
-                                // head + timestamp + flag + imu + battery + lfp + raster
-                                err = mode_3_tx_payload_wrap(mode_3_array_lfp_t, mua_output, imu_data, lc_data, sizeof(mode_3_array_lfp_t)/2);
+
+                        }else if(sampe_mode == 3){ 
+                                // head + timestamp + flag + imu + battery + lfp + raster : 16 * 3 + 16 * 3 + 4 + 6 + 3 + 3 = 112
+                                err = mode_3_tx_payload_wrap(mode_3_array_lfp_t, mode_3_array_esa_t, mua_output, imu_data, lc_data, MODE_3_LFP_SIZE);
                         } // 31.45mW; 8.5 mA 3.7V 
                         
                 /*** 4. suspend main thread and wait to be waked up ***/

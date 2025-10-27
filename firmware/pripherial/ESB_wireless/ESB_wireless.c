@@ -91,8 +91,8 @@ int esb_initialize(void)
 	}
 
     // 这个会影响传输重发率和通信距离；在极限的设置下，目前custom board的esb通信距离在20cm左右；而且不能有障碍物；
-	// esb_set_tx_power(ESB_TX_POWER_0DBM); 
-    esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
+	esb_set_tx_power(ESB_TX_POWER_0DBM); 
+    // esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
 
     esb_set_rf_channel(84); 
 	return 0;
@@ -145,7 +145,7 @@ void command_process(uint8_t length, uint16_t *data)
     }
         break;
 
-    case 0x0200: // LFP channels switch
+    case 0x0200: //  channels switch
     {
         recorded_channel_num = 0;
         for (int i=0;i<16;i++){
@@ -170,6 +170,9 @@ void command_process(uint8_t length, uint16_t *data)
         if((u8_t)data[1] < 16){
             recorded_spike_channel = (u8_t)data[1];
             threshold_list[recorded_spike_channel] = data[2];
+            // copy the value to mode3
+            float temp_threshold_download = ((float)( data[2]) * scale_factor - RHD2132_ADC_REF_VOLTAGE) * Filter_scale;
+            set_spike_threshold(recorded_spike_channel, temp_threshold_download);
         }
     }
         break;
@@ -298,12 +301,13 @@ int empty_payload_wrap(int16_t *lc_data){
     return esb_write_payload(&empty_payload); // wirte 对应 tx ,将packet加入到tx buffer中
 }
 
+/**************************mode 0**********************/
 int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t raw_length){ // LFP recording
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
     // 1. pre-head of packet 0xXXYY---XX is rf_channel; YY is the number of recorded channels
-    tx_payload.data[0] = 0x0100 | recorded_channel_num; 
+    tx_payload.data[0] = 0x0100; 
     // 2. package signal including: real-time timestamp; overflow_signal
     tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
     tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
@@ -324,7 +328,7 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
     }
     txbufIndex += 3;
 
-    // 5. LFP raw data 16 channel 2KHz -> 32KHz ; length: 16 * 7 = 112 points 
+    // 5. LFP raw data 16 channel 1.25KHz ; length: 16 * 4 = 64 points 
    
     for (int i = 0; i < raw_length; i++)
     { 
@@ -332,10 +336,11 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
     }
     txbufIndex += raw_length;
   
-    tx_payload.length = txbufIndex * 2; //  224 + 26 == 250 bytes; maximum 252 bytes
+    tx_payload.length = txbufIndex * 2; //  64 + 4 + 6 + 3 == 77 shorts; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
 }
 
+/**************************mode 1**********************/
 int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data, u16_t spike_raw_length, u8_t packet_index){
     tx_payload.noack = 0;
 
@@ -440,7 +445,9 @@ int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data){
 
 }
 
-int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length){
+
+/**************************mode 3**********************/
+int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length){
     tx_payload.noack = 0;
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
@@ -466,19 +473,26 @@ int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *Spike_raster_data, int16_
     }
     txbufIndex += 3;
 
-    // 5. lfp raw data 1 channel length: 105
+    // 5. lfp raw data 1 channel length: 3 * 16
     for (int i = 0; i < lfp_raw_length; i++)
     { 
         tx_payload.data[txbufIndex + i] = (u16_t)*(lfp_Raw_data + i);
     }
     txbufIndex += lfp_raw_length;
+
+    // 6. ESA raw data 1
+    for (int i = 0; i < lfp_raw_length; i++)
+    { 
+        tx_payload.data[txbufIndex + i] = (u16_t)*(ESA_Raw_data + i);
+    }
+    txbufIndex += lfp_raw_length;
     
-    // 6. spike raster data 4 shorts
-    for (int i = 0; i < 5; i++)
+    // 6. spike raster data
+    for (int i = 0; i < 3; i++)
     { 
         tx_payload.data[txbufIndex + i] = (u16_t)*(Spike_raster_data + i);
     }
-    txbufIndex += 5;
+    txbufIndex += 3;
 
     tx_payload.length = txbufIndex * 2; //  16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 5 (raster, 1 ms per short) == 98
     return esb_write_payload(&tx_payload); 

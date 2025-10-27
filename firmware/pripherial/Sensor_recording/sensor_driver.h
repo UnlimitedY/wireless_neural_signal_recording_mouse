@@ -15,16 +15,16 @@
 /*Pin Definitions*/
 
 #define I2C0_NODE DT_NODELABEL(i2c0)
-#define LC_SDA_PIN             22 //  
-#define LC_SCL_PIN             25 //
+#define LC_SDA_PIN             NRF_GPIO_PIN_MAP(0, 22) //  NRF_GPIO_PIN_MAP(0, 4) for 32 channels
+#define LC_SCL_PIN             NRF_GPIO_PIN_MAP(0, 25) //    NRF_GPIO_PIN_MAP(0, 5) for 32 channels
 
 #define Bq25176_PG             NRF_GPIO_PIN_MAP(1, 4)
 #define Bq25176_PG_STAT             NRF_GPIO_PIN_MAP(1, 1)
 
-#define LSM_CS_PIN              NRF_GPIO_PIN_MAP(0, 28) // 28 for omnetics  30 for other
-#define LSM_SCL_PIN             NRF_GPIO_PIN_MAP(0, 30) // NRF_GPIO_PIN_MAP(0, 1) for other  30 for omnetics
-#define LSM_SDI_PIN             NRF_GPIO_PIN_MAP(0, 8) // Data input: MOSI
-#define LSM_SDO_PIN             NRF_GPIO_PIN_MAP(1, 9) // Data output: MISO: PIN 1.09 32 + 9
+#define LSM_CS_PIN              NRF_GPIO_PIN_MAP(0, 28) 
+#define LSM_SCL_PIN             NRF_GPIO_PIN_MAP(0, 30) 
+#define LSM_SDI_PIN             NRF_GPIO_PIN_MAP(0, 8) 
+#define LSM_SDO_PIN             NRF_GPIO_PIN_MAP(1, 9) 
 
 #define TWI_MAX_NUM_TX_BYTES 14
 #define TWI_TIMEOUT 20000 // waiting time

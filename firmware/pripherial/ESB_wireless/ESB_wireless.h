@@ -12,7 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
 
-
+#include "..\RHD_Recording\OnlineFilter.h"
 /*
  * typedef
  */
@@ -28,7 +28,7 @@ extern u32_t tx_payload_wraped_num;
 extern uint32_t packet_sent_counter[2]; // count the sent package number: [0] is success; [1] is fail
 extern u8_t HABITS_events; // define the events of HABITS
 
-extern u8_t raw_channel[16]; // define which channels used
+extern u8_t raw_channel[16]; // define which channels used; 16
 extern u8_t recorded_channel_num; // lfp raw data: channel number
 
 extern u8_t spike_raw_channel[4]; // spike raw data: channel index: maximum 4 channels recorded 
@@ -72,7 +72,7 @@ extern struct esb_payload timestamp_payload; // neural signal alignment required
 */
 extern u32_t packet_timestamp; // define the unique packet index: timestamp
 extern uint32_t timestamp_LTNSRS; // packed timestamp from LTNSRS (long-term neural signal recording system)
-
+extern u8_t led_align_state; // packed timestamp from LTNSRS (long-term neural signal recording system)
 // not use
 extern uint32_t timestamp_HABITS; // received timestamp from HABITS
 extern uint32_t timestamp_baseline; // baseline timestamp updated by alignment events
@@ -105,6 +105,6 @@ int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u
 int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data);
 // mode 3
 // tx_payload wrap function: when sample working: mode 1
-int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length);
+int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length);
 
 #endif
