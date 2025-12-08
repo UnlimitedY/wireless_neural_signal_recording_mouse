@@ -158,10 +158,12 @@ void command_process(uint8_t length, uint16_t *data)
         break;
     case 0x0300: // behavioral event-triggered tasks (change mode): GUI & HABITS
     {
-        mode_switch_flag = true;
-        sample_switch = false;
-        if((u8_t)data[1] <= 3){
-            sampe_mode = data[1];
+        if(data[1] != sampe_mode){
+            mode_switch_flag = true;
+            sample_switch = false;
+            if((u8_t)data[1] <= 3){
+                sampe_mode = data[1];
+            }
         }
     }
         break;
@@ -169,6 +171,7 @@ void command_process(uint8_t length, uint16_t *data)
     {
         if((u8_t)data[1] < 16){
             recorded_spike_channel = (u8_t)data[1];
+            mode3_raw_chunk_count = 0;
             threshold_list[recorded_spike_channel] = data[2];
             // copy the value to mode3
             float temp_threshold_download = ((float)( data[2]) * scale_factor - RHD2132_ADC_REF_VOLTAGE) * Filter_scale;
@@ -495,5 +498,27 @@ int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spik
     txbufIndex += 3;
 
     tx_payload.length = txbufIndex * 2; //  16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 5 (raster, 1 ms per short) == 98
+    return esb_write_payload(&tx_payload); 
+}
+
+int mode_3_raw_tx_payload_wrap(u16_t *Raw_data,  u16_t RawData_length,  u8_t Channel_index){
+    tx_payload.noack = 0;
+
+    u16_t txbufIndex = 0; // count the length of one tx_payload package
+    // 1. pre-head of packet 0xXXYY---XX is type; YY is the index of recorded channels
+    tx_payload.data[0] = 0x0800 | Channel_index; 
+    // 2. package signal including: real-time timestamp; overflow_signal
+    tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
+    tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);
+    tx_payload.data[3] = (u16_t)overflow_signal; 
+    txbufIndex += 4;
+    // 3. spike raw data 1 channel length: 30
+    for (int i = 0; i < RawData_length; i++)
+    { 
+        tx_payload.data[txbufIndex + i] = (u16_t)*(Raw_data + i);
+    }
+    txbufIndex += RawData_length;
+    
+    tx_payload.length = txbufIndex * 2; //  4 + 30 == 34 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
 }

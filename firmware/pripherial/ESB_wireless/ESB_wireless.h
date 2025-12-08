@@ -33,6 +33,7 @@ extern u8_t recorded_channel_num; // lfp raw data: channel number
 
 extern u8_t spike_raw_channel[4]; // spike raw data: channel index: maximum 4 channels recorded 
 extern u8_t recorded_spike_channel; // spike raw data: mode 1
+extern u8_t mode3_raw_chunk_count;
 
 extern bool overflow_signal;
 extern uint64_t stamp_check; // real-time timestamp from the power-up
@@ -106,5 +107,5 @@ int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data);
 // mode 3
 // tx_payload wrap function: when sample working: mode 1
 int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spike_raster_data, int16_t *imu_data, int16_t *lc_data,  u16_t lfp_raw_length);
-
+int mode_3_raw_tx_payload_wrap(u16_t *Raw_data,  u16_t RawData_length,  u8_t Channel_index);
 #endif

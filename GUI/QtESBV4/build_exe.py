@@ -76,6 +76,7 @@ a = Analysis(
         (r"{gui_dir / 'RFPowerControl.py'}", '.'),
         (r"{gui_dir / 'camera_module.py'}", '.'),
         (r"{gui_dir / 'optimized_habits_panel.py'}", '.'),
+        (r"{gui_dir / 'path_utils.py'}", '.'),
     ],
     hiddenimports=[
         'PyQt6.QtCore',
@@ -99,7 +100,8 @@ a = Analysis(
         'neural_recorder_main_ui',
         'RFPowerControl',
         'camera_module', 
-        'optimized_habits_panel'
+        'optimized_habits_panel',
+        'path_utils'
     ],
     hookspath=[],
     hooksconfig={{}},

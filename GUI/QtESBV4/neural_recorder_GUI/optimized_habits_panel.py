@@ -18,6 +18,7 @@ import serial.tools.list_ports
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import (QThread, pyqtSignal, QTimer, Qt, QDate)
+from path_utils import get_data_directory, get_mouse_data_directory, get_default_save_path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit,
@@ -257,15 +258,14 @@ class TrialDataManager:
 
 class OptimizedHabitsPanel(QWidget):
     """优化的Habits面板"""
-    
+    Neural_recorder_command = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(1000, 700)
         
-        # 数据存储
-        self.data_folder = os.path.join(os.path.dirname(__file__), "Data")
-        if not os.path.exists(self.data_folder):
-            os.makedirs(self.data_folder)
+        # 数据存储 - 使用exe所在目录下的Data文件夹
+        self.data_folder = get_data_directory("Data")
             
         # 串口通信
         self.serial_worker = None
@@ -766,9 +766,10 @@ class OptimizedHabitsPanel(QWidget):
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {data}"
         
-        # 特殊处理TimeAlign数据 - 立即记录高精度时间戳
-        if data.startswith("TimeAlign:"):
-            self.save_time_align_data()
+        # 用于处理时间对齐事件，用来自动化switch 在mode0 和mode3 之间
+        if data.startswith("ModeSwitch:"):
+            # self.save_time_align_data()
+            self.Neural_recorder_command.emit(data[11:]) # 2 -> mode3; 1-> mode0
         
         # 添加到日志
         self.serial_data_log.append(log_entry)
@@ -1013,9 +1014,7 @@ class OptimizedHabitsPanel(QWidget):
                 mouse_id = "Mouse_001"  # 默认值
                 
             # 创建以mouse ID为名的文件夹
-            mouse_data_folder = os.path.join(self.data_folder, mouse_id)
-            if not os.path.exists(mouse_data_folder):
-                os.makedirs(mouse_data_folder)
+            mouse_data_folder = get_mouse_data_directory(mouse_id)
             
             params = {
                 'mouse_id': mouse_id,
@@ -1086,7 +1085,7 @@ class OptimizedHabitsPanel(QWidget):
             if not mouse_id:
                 mouse_id = "Mouse_001"  # 默认值
                 
-            mouse_data_folder = os.path.join(self.data_folder, mouse_id)
+            mouse_data_folder = get_mouse_data_directory(mouse_id)
             params_file = os.path.join(mouse_data_folder, "habits_params.json")
             
             # 如果mouse ID文件夹不存在，尝试从旧的根目录加载
@@ -1114,7 +1113,7 @@ class OptimizedHabitsPanel(QWidget):
                 
                 # 更新mouse_id以防从旧文件加载
                 mouse_id = params.get('mouse_id', mouse_id)
-                mouse_data_folder = os.path.join(self.data_folder, mouse_id)
+                mouse_data_folder = get_mouse_data_directory(mouse_id)
             else:
                 self.add_message("No parameter file found")
             
@@ -1184,9 +1183,7 @@ class OptimizedHabitsPanel(QWidget):
                 mouse_id = "Unknown"
             
             # 创建鼠标ID专用文件夹
-            mouse_folder = os.path.join(self.data_folder, mouse_id)
-            if not os.path.exists(mouse_folder):
-                os.makedirs(mouse_folder)
+            mouse_folder = get_mouse_data_directory(mouse_id)
             
             # 生成TimeAlign文件名
             date_str = datetime.now().strftime("%Y%m%d")

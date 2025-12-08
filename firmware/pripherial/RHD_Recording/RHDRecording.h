@@ -131,7 +131,8 @@ extern const u16_t NINE_DUMMPY[9];
 
 #define lfp_Register3 0x0083 // diable tempS and digout
 // absmode disable + unsigned offset binary notation ADC + weak MISO + DSP high-pass filter enable(1.2Hz upper bandwidth) // 0x9884
-#define lfp_Register4 0x8084 // disable DSP 
+// #define lfp_Register4 0x8084 // disable DSP 
+#define lfp_Register4 0x9884 // DSP cutoff freq: 8 -> 0.778Hz at 1250 Sampling rate
 // Impedance check
 #define lfp_Register5 0x0085 // Impedance check control ,which is disable
 #define lfp_Register6 0x0086 // DAC output voltage ,there is 0
@@ -157,10 +158,12 @@ extern const u16_t NINE_DUMMPY[9];
 /************************ mode3: spike 12.5khz sampling setting with DSP*******************/ 
 #define spike_mode3_Register1 0x0881 // VDD sense disable ,using 16 * 12.5KS/s ADC  8
 #define spike_mode3_Register2 0x2082 // MUX bias current, configuration as above    32
-// DSP high-pass filter (265Hz Fc at 12500 Hz)
-// #define spike_mode3_Register4 0x9384 
+// #define spike_mode3_Register1 0x0481 
+// #define spike_mode3_Register2 0x1282 
+// DSP high-pass filter for DC offset removal
+#define spike_mode3_Register4 0x9b84  // DSP cutoff freq: 11 -> 0.9Hz at 12500 Sampling rate
 // DSP disable
-#define spike_mode3_Register4 0x8084 
+// #define spike_mode3_Register4 0x8084 
 
 /************************ mode1: spike 20khz sampling setting *******************/ 
 #define spike_Register0_enable 0xde80
@@ -186,7 +189,7 @@ extern const u16_t NINE_DUMMPY[9];
 #define spike_Register16 0xff90
 #define spike_Register17 0x0091
 /************************ mode2: spike 20khz sampling setting without DSP*******************/ 
-#define spike_raw_Register4 0x8084
+#define spike_raw_Register4 0x9b84 // DSP cutoff freq: 11 -> 1.5Hz at 20000 Sampling rate for DC offset removal
 
 extern const u16_t Register_config_lfp[18];
 

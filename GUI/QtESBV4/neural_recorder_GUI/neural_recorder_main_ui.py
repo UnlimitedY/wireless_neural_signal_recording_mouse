@@ -11,6 +11,7 @@ import cv2
 import os
 from camera_module import CameraModule, get_available_cameras
 from optimized_habits_panel import OptimizedHabitsPanel
+from path_utils import get_default_save_path, get_data_directory
 
 class SerialConnectionDialog(QDialog):
     connection_established = pyqtSignal(str) # Signal to emit when connection is made
@@ -175,10 +176,10 @@ class BaseDisplayTab(QWidget):
         # 控制面板 - 缩小控制面板
         self.control_panel = QGroupBox("Control panel")
         self.control_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        self.control_panel.setMaximumHeight(100)  # 限制最大高度
+        self.control_panel.setMaximumHeight(180)  # 提升控制面板最大高度以避免拥挤
         self.control_panel_layout = QGridLayout(self.control_panel)
         self.control_panel_layout.setContentsMargins(5, 5, 5, 5)
-        self.control_panel_layout.setSpacing(5)
+        self.control_panel_layout.setSpacing(8)
         splitter.addWidget(self.control_panel)
         
         # 图表区域 - 增大图表区域
@@ -212,8 +213,10 @@ class BaseDisplayTab(QWidget):
         
     def select_file(self):
         """选择文件保存路径"""
+        # 使用exe所在目录下的Data文件夹作为默认路径
+        default_dir = get_data_directory()
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存数据文件", "", "npy文件 (*.npy);;所有文件 (*)"
+            self, "保存数据文件", default_dir, "EDF文件 (*.edf);;所有文件 (*)"
         )
         if file_path:
             self.file_path_label.setText(file_path)
@@ -238,54 +241,72 @@ class LfpTab(BaseDisplayTab):
         super().__init__("16 channels LFP+ESA signal", parent)
 
     def populate_controls(self):
-        # 文件保存功能 - 简化布局
-        file_layout = QHBoxLayout()
-        file_layout.addWidget(QLabel("File:"))
-        self.file_path_label = QLabel("File path don't selected")
-        file_layout.addWidget(self.file_path_label, 1)
-        
-        self.select_file_button = QPushButton("Choice")
-        self.select_file_button.setMaximumWidth(60)
-        self.select_file_button.clicked.connect(self.select_file)
-        file_layout.addWidget(self.select_file_button)
-        
-        self.control_panel_layout.addLayout(file_layout, 0, 0, 1, 2)
-        
-        # 文件保存和滤波器控制按钮 - 放在同一行
-        button_layout = QHBoxLayout()
-        
-        self.start_save_button = QPushButton("Save Start")
-        self.start_save_button.clicked.connect(self.start_save)
-        button_layout.addWidget(self.start_save_button)
-        
-        self.stop_save_button = QPushButton("Save Stop")
-        self.stop_save_button.clicked.connect(self.stop_save)
+        # 文件保存功能 - 分离LFP与Mode3路径
+        lfp_file_layout = QHBoxLayout()
+        lfp_file_layout.addWidget(QLabel("LFP File:"))
+        self.lfp_file_path_label = QLabel("File path don't selected")
+        lfp_file_layout.addWidget(self.lfp_file_path_label, 1)
+        self.lfp_select_file_button = QPushButton("Choice")
+        self.lfp_select_file_button.setMaximumWidth(70)
+        self.lfp_select_file_button.clicked.connect(self.select_lfp_file)
+        lfp_file_layout.addWidget(self.lfp_select_file_button)
+        self.control_panel_layout.addLayout(lfp_file_layout, 0, 0, 1, 2)
+
+        # LFP保存按钮独立一行
+        lfp_save_layout = QHBoxLayout()
+        self.start_save_button = QPushButton("LFP Save Start")
+        lfp_save_layout.addWidget(self.start_save_button)
+        self.stop_save_button = QPushButton("LFP Save Stop")
         self.stop_save_button.setEnabled(False)
-        button_layout.addWidget(self.stop_save_button)
-        
-        # 滤波器设置
-        button_layout.addWidget(QLabel("Low cutoff:"))
+        lfp_save_layout.addWidget(self.stop_save_button)
+        lfp_save_layout.addStretch(1)
+        self.control_panel_layout.addLayout(lfp_save_layout, 1, 0, 1, 2)
+
+        # Mode3路径一行
+        mode3_file_layout = QHBoxLayout()
+        mode3_file_layout.addWidget(QLabel("Mode3 File:"))
+        self.mode3_file_path_label = QLabel("File path don't selected")
+        mode3_file_layout.addWidget(self.mode3_file_path_label, 1)
+        self.mode3_select_file_button = QPushButton("Choice")
+        self.mode3_select_file_button.setMaximumWidth(70)
+        self.mode3_select_file_button.clicked.connect(self.select_mode3_file)
+        mode3_file_layout.addWidget(self.mode3_select_file_button)
+        self.control_panel_layout.addLayout(mode3_file_layout, 2, 0, 1, 2)
+
+        # Mode3保存按钮独立一行
+        mode3_save_layout = QHBoxLayout()
+        self.start_save_mode3_button = QPushButton("Mode3 Save Start")
+        mode3_save_layout.addWidget(self.start_save_mode3_button)
+        self.stop_save_mode3_button = QPushButton("Mode3 Save Stop")
+        self.stop_save_mode3_button.setEnabled(False)
+        mode3_save_layout.addWidget(self.stop_save_mode3_button)
+        mode3_save_layout.addStretch(1)
+        self.control_panel_layout.addLayout(mode3_save_layout, 3, 0, 1, 2)
+
+        # 滤波器设置独立一行
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Low cutoff:"))
         self.low_cutoff = QComboBox()
         self.low_cutoff.addItems(["0.5", "4", "8", "13", "30", "50", "100", "150",  "250", "300", "None"])
-        self.low_cutoff.setMaximumWidth(80)
-        button_layout.addWidget(self.low_cutoff)
-        
-        button_layout.addWidget(QLabel("High cutoff:"))
+        self.low_cutoff.setMaximumWidth(90)
+        filter_layout.addWidget(self.low_cutoff)
+
+        filter_layout.addWidget(QLabel("High cutoff:"))
         self.high_cutoff = QComboBox()
         self.high_cutoff.addItems(["4", "8", "13", "30","50" ,"100", "150", "250",  "300", "None"])
-        self.high_cutoff.setMaximumWidth(80)
-        button_layout.addWidget(self.high_cutoff)
-        
+        self.high_cutoff.setMaximumWidth(90)
+        filter_layout.addWidget(self.high_cutoff)
+
         self.enable_filter_button = QPushButton("filter enable")
         self.enable_filter_button.clicked.connect(self.enable_filter)
-        button_layout.addWidget(self.enable_filter_button)
-        
+        filter_layout.addWidget(self.enable_filter_button)
+
         self.disable_filter_button = QPushButton("filter disable")
         self.disable_filter_button.clicked.connect(self.disable_filter)
         self.disable_filter_button.setEnabled(False)
-        button_layout.addWidget(self.disable_filter_button)
-        
-        self.control_panel_layout.addLayout(button_layout, 1, 0, 1, 2)
+        filter_layout.addWidget(self.disable_filter_button)
+        filter_layout.addStretch(1)
+        self.control_panel_layout.addLayout(filter_layout, 4, 0, 1, 2)
     
     def enable_filter(self):
         """启用滤波器"""
@@ -300,6 +321,24 @@ class LfpTab(BaseDisplayTab):
         print("禁用滤波器")
         self.enable_filter_button.setEnabled(True)
         self.disable_filter_button.setEnabled(False)
+
+    def select_lfp_file(self):
+        """选择LFP保存路径"""
+        default_dir = get_data_directory()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存LFP数据文件", default_dir, "EDF文件 (*.edf);;所有文件 (*)"
+        )
+        if file_path:
+            self.lfp_file_path_label.setText(file_path)
+
+    def select_mode3_file(self):
+        """选择Mode3保存路径"""
+        default_dir = get_data_directory()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存Mode3数据文件", default_dir, "EDF文件 (*.edf);;所有文件 (*)"
+        )
+        if file_path:
+            self.mode3_file_path_label.setText(file_path)
 
 class Spike4ChTab(BaseDisplayTab):
     def __init__(self, parent=None):
@@ -406,23 +445,88 @@ class Spike1ChTab(BaseDisplayTab):
         super().__init__("单通道 Spike 信号", parent)
 
     def populate_controls(self):
-        # 简化布局
+        # 顶部文件保存布局（Mode1）
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel("Mode1 File:"))
+        self.mode1_file_path_label = QLabel("File path don't selected")
+        file_layout.addWidget(self.mode1_file_path_label, 1)
+        self.mode1_select_file_button = QPushButton("Choice")
+        self.mode1_select_file_button.setMaximumWidth(60)
+        self.mode1_select_file_button.clicked.connect(self.select_mode1_file)
+        file_layout.addWidget(self.mode1_select_file_button)
+        self.control_panel_layout.addLayout(file_layout, 0, 0, 1, 1)
+
+        # 控制面板布局（滤波与通道控制）
         control_layout = QHBoxLayout()
-        
+
+        # 通道选择
         control_layout.addWidget(QLabel("Select channel:"))
         self.channel_combo = QComboBox()
         self.channel_combo.addItems([f"Channel {i}" for i in range(16)])
         self.channel_combo.setMaximumWidth(100)
         control_layout.addWidget(self.channel_combo)
-        
+
         self.send_command_button = QPushButton("Send")
         self.send_command_button.clicked.connect(self.send_command)
         control_layout.addWidget(self.send_command_button)
-        
+
+        # 分隔线
+        control_layout.addSpacing(15)
+
+        # 滤波器设置
+        self.filter_enable_checkbox = QCheckBox("Enable filter")
+        control_layout.addWidget(self.filter_enable_checkbox)
+
+        control_layout.addWidget(QLabel("Low cutoff (Hz):"))
+        self.low_cut_spin = QDoubleSpinBox()
+        self.low_cut_spin.setRange(1.0, 9999.0)
+        self.low_cut_spin.setDecimals(1)
+        self.low_cut_spin.setSingleStep(10.0)
+        self.low_cut_spin.setValue(300.0)
+        self.low_cut_spin.setMaximumWidth(100)
+        control_layout.addWidget(self.low_cut_spin)
+
+        control_layout.addWidget(QLabel("High cutoff (Hz):"))
+        self.high_cut_spin = QDoubleSpinBox()
+        self.high_cut_spin.setRange(10.0, 10000.0)
+        self.high_cut_spin.setDecimals(1)
+        self.high_cut_spin.setSingleStep(10.0)
+        self.high_cut_spin.setValue(3000.0)
+        self.high_cut_spin.setMaximumWidth(100)
+        control_layout.addWidget(self.high_cut_spin)
+
+        # 采样率选择
+        control_layout.addWidget(QLabel("Sample rate:"))
+        self.sample_rate_combo = QComboBox()
+        self.sample_rate_combo.addItems(["12500 Hz", "20000 Hz"])  # 对应 12.5k 与 20k
+        self.sample_rate_combo.setCurrentIndex(1)  # 默认 20000 Hz
+        self.sample_rate_combo.setMaximumWidth(110)
+        control_layout.addWidget(self.sample_rate_combo)
+
+        # 频谱按钮
+        self.open_spectrum_button = QPushButton("Open Spectrum")
+        control_layout.addWidget(self.open_spectrum_button)
+
+        # Mode1保存按钮
+        self.start_save_button = QPushButton("Mode1 Save Start")
+        control_layout.addWidget(self.start_save_button)
+        self.stop_save_button = QPushButton("Mode1 Save Stop")
+        self.stop_save_button.setEnabled(False)
+        control_layout.addWidget(self.stop_save_button)
+
         # 添加弹性空间
         control_layout.addStretch(1)
-        
-        self.control_panel_layout.addLayout(control_layout, 0, 0)
+
+        self.control_panel_layout.addLayout(control_layout, 1, 0)
+
+    def select_mode1_file(self):
+        """选择Mode1保存路径"""
+        default_dir = get_data_directory()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存Mode1数据文件", default_dir, "EDF文件 (*.edf);;所有文件 (*)"
+        )
+        if file_path:
+            self.mode1_file_path_label.setText(file_path)
         
     def send_command(self):
         channel = self.channel_combo.currentText()
@@ -466,6 +570,7 @@ class MainWindow(QMainWindow):
 
         # 初始化摄像头相关属性
         self.is_camera_on = False
+        self.is_camera_display_on = False
         self.is_recording = False
 
         self.video_save_path = None
@@ -500,6 +605,13 @@ class MainWindow(QMainWindow):
         self.toggle_camera_button.setMinimumHeight(35)
         self.toggle_camera_button.clicked.connect(self.toggle_camera)
         camera_control_layout.addWidget(self.toggle_camera_button)
+        
+        # 新增：独立的摄像头显示切换按钮
+        self.toggle_camera_display_button = QPushButton("Show camera")
+        self.toggle_camera_display_button.setMinimumHeight(35)
+        self.toggle_camera_display_button.setEnabled(False)
+        self.toggle_camera_display_button.clicked.connect(self.toggle_camera_display)
+        camera_control_layout.addWidget(self.toggle_camera_display_button)
         
         self.toggle_recording_button = QPushButton("Start recording")
         self.toggle_recording_button.setMinimumHeight(35)
@@ -761,6 +873,7 @@ class MainWindow(QMainWindow):
         if not available_cameras:
             self.camera_selection_combo.addItem("No cameras found")
             self.toggle_camera_button.setEnabled(False)
+            self.toggle_camera_display_button.setEnabled(False)
         else:
             for camera in available_cameras:
                 display_text = f"{camera['name']} ({camera['resolution']}, {camera['fps']:.1f}fps)"
@@ -860,44 +973,32 @@ class MainWindow(QMainWindow):
                 self.is_camera_on = True
                 self.toggle_camera_button.setText("Close camera")
                 self.toggle_recording_button.setEnabled(True)
+                self.toggle_camera_display_button.setEnabled(True)
                 
-                # 创建摄像头显示标签（如果尚未创建）
+                # 不自动显示摄像头画面；仅在用户点击“Show camera”时显示
+                # 确保摄像头显示标签已准备但默认隐藏
                 if not hasattr(self, 'camera_display'):
                     self.camera_display = QLabel("Camera not opened")
                     self.camera_display.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     self.camera_display.setStyleSheet("background-color: black; color: white;")
                     self.camera_display.setMinimumHeight(240)
                     self.camera_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-                
-                # 确保摄像头显示组件可见
-                self.camera_display.setVisible(True)
-                
-                # 获取主布局
-                main_layout = self.central_widget.layout()
-                
-                # 检查摄像头显示是否已经在布局中
-                found = False
-                for i in range(main_layout.count()):
-                    if main_layout.itemAt(i).widget() == self.camera_display:
-                        found = True
-                        break
-                
-                # 如果不在布局中，则添加到布局
-                if not found:
-                    # 在控制栏下方插入摄像头显示
-                    main_layout.insertWidget(2, self.camera_display)
-                
-                # 启动定时器更新摄像头画面
-                self.camera_timer.start(16)  # 约30fps，提高更新频率
+                self.camera_display.setVisible(False)
             else:
                 QMessageBox.warning(self, "Error", "Cannot open camera")
         else:
             # 关闭摄像头
-            self.camera_timer.stop()
+            # 若显示开启，先停止更新并隐藏
+            if self.is_camera_display_on:
+                self.camera_timer.stop()
+                self.is_camera_display_on = False
+                self.toggle_camera_display_button.setText("Show camera")
+            
             self.camera_module.close_camera()
             self.is_camera_on = False
             self.toggle_camera_button.setText("Open camera")
             self.toggle_recording_button.setEnabled(False)
+            self.toggle_camera_display_button.setEnabled(False)
             if self.is_recording:
                 self.toggle_recording()
             
@@ -907,11 +1008,48 @@ class MainWindow(QMainWindow):
                 if isinstance(main_layout, QVBoxLayout):
                     main_layout.removeWidget(self.camera_display)
                     self.camera_display.setVisible(False)
+
+    def toggle_camera_display(self):
+        """独立控制摄像头画面显示/隐藏"""
+        if not self.is_camera_on:
+            QMessageBox.warning(self, "Warning", "请先打开摄像头")
+            return
+        
+        main_layout = self.central_widget.layout()
+        
+        if not self.is_camera_display_on:
+            # 打开显示：将label插入布局并启动定时器
+            # 检查是否已经在布局中
+            found = False
+            for i in range(main_layout.count()):
+                if main_layout.itemAt(i).widget() == self.camera_display:
+                    found = True
+                    break
+            if not found:
+                main_layout.insertWidget(2, self.camera_display)
+            self.camera_display.setVisible(True)
+            self.camera_timer.start(16)
+            self.is_camera_display_on = True
+            self.toggle_camera_display_button.setText("Hide camera")
+        else:
+            # 关闭显示：停止定时器并从布局移除label
+            self.camera_timer.stop()
+            if isinstance(main_layout, QVBoxLayout):
+                main_layout.removeWidget(self.camera_display)
+            self.camera_display.setVisible(False)
+            self.is_camera_display_on = False
+            self.toggle_camera_display_button.setText("Show camera")
         
     def update_camera_frame(self):
         """更新摄像头画面"""
+        if not self.is_camera_display_on:
+            return
         if hasattr(self, 'camera_display') and self.camera_display:
-            frame = self.camera_module.get_frame()
+            # 当录制开启时，使用录制线程更新的最新帧，避免双线程抓帧
+            if self.is_recording and self.camera_module.frame is not None:
+                frame = self.camera_module.frame
+            else:
+                frame = self.camera_module.get_frame()
             if frame is not None:
                 # 转换OpenCV图像为Qt图像
                 rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -937,8 +1075,11 @@ class MainWindow(QMainWindow):
         
     def select_video_save_path(self):
         """选择视频保存路径"""
+        # 使用exe所在目录下的recordings文件夹作为默认路径
+        from path_utils import get_recordings_directory
+        default_dir = get_recordings_directory()
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save video file", "", "AVI file (*.avi);;All files (*)"
+            self, "Save video file", default_dir, "AVI file (*.avi);;All files (*)"
         )
         if file_path:
             self.video_save_path = file_path

@@ -15,16 +15,13 @@ a = Analysis(
     pathex=[r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4", r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI"],
     binaries=[],
     datas=[
-        # 包含滤波器系数文件
-        (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\IIR_1order_highpass_250Hz_coeffi.fcf", '.'),
-        (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\IIR_1order_lowpass_12Hz_coeffi.fcf", '.'),
-        (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\IIR_2order_lowpass_250Hz_coeffi.fcf", '.'),
         # 包含所有Python模块
         (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\neural_reader.py", '.'),
         (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\neural_recorder_main_ui.py", '.'),
         (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\RFPowerControl.py", '.'),
         (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\camera_module.py", '.'),
         (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\optimized_habits_panel.py", '.'),
+        (r"e:\wirelessNeuralRecording-mouse\firmware\LFP\QtESBV4\neural_recorder_GUI\path_utils.py", '.'),
     ],
     hiddenimports=[
         'PyQt6.QtCore',
@@ -48,7 +45,8 @@ a = Analysis(
         'neural_recorder_main_ui',
         'RFPowerControl',
         'camera_module', 
-        'optimized_habits_panel'
+        'optimized_habits_panel',
+        'path_utils'
     ],
     hookspath=[],
     hooksconfig={},

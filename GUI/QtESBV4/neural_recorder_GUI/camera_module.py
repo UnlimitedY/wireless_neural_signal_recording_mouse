@@ -5,6 +5,7 @@ import datetime
 import threading
 import numpy as np
 from typing import Dict, Tuple, Optional
+from path_utils import get_recordings_directory
 
 def get_available_cameras():
     """检测可用的摄像头"""
@@ -269,9 +270,8 @@ class CameraModule:
         extension = self.codec_configs[codec]['extension']
         
         if save_path is None:
-            # 创建保存目录
-            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
-            os.makedirs(save_dir, exist_ok=True)
+            # 创建保存目录 - 使用exe所在目录下的recordings文件夹
+            save_dir = get_recordings_directory()
             
             # 生成文件名，使用正确的扩展名
             save_path = os.path.join(save_dir, f"video_{timestamp}{extension}")
@@ -295,9 +295,11 @@ class CameraModule:
         height = height if height % 2 == 0 else height - 1
         
         # 应用帧率限制
-        fps = self.compression_config['fps_limit'] if self.compression_config['fps_limit'] else original_fps
+        # 强制使用30fps进行录制
+        self.compression_config['fps_limit'] = 30
+        fps = 30
         if fps <= 0 or fps > 100:
-            fps = 30.0  # 默认帧率
+            fps = 30  # 默认帧率
         
         print(f"录制配置: 编码器={codec}, 质量={self.compression_config['quality']}")
         print(f"分辨率: {original_width}x{original_height} -> {width}x{height}")
@@ -330,7 +332,8 @@ class CameraModule:
             'target_height': height,
             'original_width': original_width,
             'original_height': original_height,
-            'scale': scale
+            'scale': scale,
+            'fps': fps
         }
         
         # 保存录制文件路径，用于后续统计
@@ -347,28 +350,47 @@ class CameraModule:
     
     def _record_video(self):
         """录制视频的线程函数"""
-        # 计算基于摄像头帧率的休眠时间
-        fps = self.camera.get(cv2.CAP_PROP_FPS)
-        if fps <= 0 or fps > 100:
-            fps = 30.0
-        
-        sleep_time = 0.01  # 根据帧率调整休眠时间;设置为2倍的刷新率来减少丢帧的风险
-         
+        # 使用录制目标帧率计算休眠时间
+        target_fps = 30
+        if hasattr(self, 'recording_params'):
+            target_fps = float(self.recording_params.get('fps', 30))
+        sleep_time = 0.01
+        print(f"录制线程休眠时间: {sleep_time:.6f}秒")
         while self.is_recording and self.is_camera_open:
+            # 独立读取摄像头帧，避免依赖GUI显示逻辑
+            ret, frame = self.camera.read()
+            if not ret:
+                time.sleep(sleep_time)
+                continue
+
+            # 更新最新帧以供GUI显示使用
             with self.lock:
-                if self.frame is not None and not self.frame_processed:
-                    frame_to_write = self.frame.copy()
-                    
-                    # 如果需要缩放分辨率
-                    if hasattr(self, 'recording_params') and self.recording_params['scale'] != 1.0:
-                        target_width = self.recording_params['target_width']
-                        target_height = self.recording_params['target_height']
-                        frame_to_write = cv2.resize(frame_to_write, (target_width, target_height), interpolation=cv2.INTER_AREA)
-                    
-                    self.video_writer.write(frame_to_write)
-                    self.frame_processed = True  # 标记为已处理
-            
-            # 根据摄像头帧率休眠，避免过度循环
+                self.frame = frame.copy()
+                self.frame_processed = False
+
+            # 如果需要缩放分辨率
+            frame_to_write = frame
+            if hasattr(self, 'recording_params') and self.recording_params['scale'] != 1.0:
+                target_width = self.recording_params['target_width']
+                target_height = self.recording_params['target_height']
+                frame_to_write = cv2.resize(frame_to_write, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
+            # 在左上角叠加时间戳文本（毫秒）
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            cv2.putText(
+                frame_to_write,
+                current_time,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+
+            self.video_writer.write(frame_to_write)
+            self.frame_processed = True
+
             time.sleep(sleep_time)
     
     def stop_recording(self):

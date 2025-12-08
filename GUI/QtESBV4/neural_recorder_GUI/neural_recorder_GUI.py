@@ -44,12 +44,12 @@ class LFPSpectrumWindow(QMainWindow):
         self.setGeometry(100, 100, 1000, 700)
         
         # 采样率设置
-        self.fs = 1000  # 1000Hz采样率
+        self.fs = 1250  # 1250Hz采样率
         self.channels = 16  # 16个LFP通道
         
         # 频率范围设置
         self.freq_min = 0
-        self.freq_max = 500
+        self.freq_max = 625
         
         # 创建中心部件和布局
         central_widget = QWidget()
@@ -117,7 +117,7 @@ class LFPSpectrumWindow(QMainWindow):
         # Frequency range selection
         freq_label = QLabel("Frequency Range:")
         self.freq_combo = QComboBox()
-        self.freq_combo.addItems(["0-500Hz", "0-100Hz", "0-50Hz", "1-100Hz", "10-100Hz", "0-250Hz"])
+        self.freq_combo.addItems(["0-625Hz", "0-100Hz", "0-50Hz", "1-100Hz", "10-100Hz", "0-250Hz"])
         self.freq_combo.currentTextChanged.connect(self.update_frequency_range)
         
         # Display mode selection
@@ -357,6 +357,14 @@ class ESBMainWindow(UI.MainWindow):
         self.ring_spike_pointer = 0
         self.spike_x = np.arange(0, self.spike_display_data_num, 1)
         self.spike_raw_data = np.full((1 ,self.spike_display_data_num) ,np.nan)
+        # Spike滤波相关参数与缓冲
+        self.spike_filter_enabled = False
+        self.spike_filter_low_cut = 300.0
+        self.spike_filter_high_cut = 3000.0
+        self.spike_filter_fs = 20000.0
+        self.spike_filtered_data = np.full((1 ,self.spike_display_data_num) ,np.nan)
+        self._spike_filter_b = None
+        self._spike_filter_a = None
         self.raw_spike_threshod = np.full((self.spike_channel_num ,self.spike_display_data_num) ,np.nan) # Spike threshold
 
         ####### spike events raster recording in 17KHz sample rate; Figure 1
@@ -644,16 +652,27 @@ class ESBMainWindow(UI.MainWindow):
         self.spike4ch_tab.chart_container_layout.addWidget(self.AP_channel)
 
         """ callback function """
+        # LFP保存按钮（互斥控制）
         self.lfp_tab.start_save_button.clicked.connect(self.start_save_lfp)
         self.lfp_tab.stop_save_button.clicked.connect(self.stop_save_lfp)
+        self.lfp_tab.start_save_mode3_button.clicked.connect(self.start_save_mode3)
+        self.lfp_tab.stop_save_mode3_button.clicked.connect(self.stop_save_mode3)
         self.spike4ch_tab.start_save_button.clicked.connect(self.start_save_mode2)
         self.spike4ch_tab.stop_save_button.clicked.connect(self.stop_save_mode2)
+        self.spike1ch_tab.start_save_button.clicked.connect(self.start_save_mode1)
+        self.spike1ch_tab.stop_save_button.clicked.connect(self.stop_save_mode1)
 
         self.start_sampling_button.clicked.connect(self.sample_start)
         self.stop_sampling_button.clicked.connect(self.sample_stop)
         self.sampling_mode_combo.currentIndexChanged.connect(self.sample_mode_switch)
         self.spike4ch_tab.send_channels_button.clicked.connect(self.spike_channel_switch_mode2)
         self.spike1ch_tab.send_command_button.clicked.connect(self.spike_channel_switch_mode1)
+        # Spike1Ch 滤波与频谱控件信号连接
+        self.spike1ch_tab.filter_enable_checkbox.toggled.connect(self.on_spike_filter_toggle)
+        self.spike1ch_tab.low_cut_spin.valueChanged.connect(self.on_spike_filter_params_changed)
+        self.spike1ch_tab.high_cut_spin.valueChanged.connect(self.on_spike_filter_params_changed)
+        self.spike1ch_tab.sample_rate_combo.currentIndexChanged.connect(self.on_spike_sample_rate_changed)
+        self.spike1ch_tab.open_spectrum_button.clicked.connect(self.open_spike_spectrum)
         self.raster_tab.auto_threshold_button.clicked.connect(self.Auto_threshold_update)
         self.raster_tab.channel_combo.currentIndexChanged.connect(self.spike_threshold_set)
         self.raster_tab.threshold_combo.currentIndexChanged.connect(self.spike_threshold_set)
@@ -681,6 +700,107 @@ class ESBMainWindow(UI.MainWindow):
         self.spectrum_window.show()
         self.spectrum_window.raise_()
         self.spectrum_window.activateWindow()
+
+    # Spike 单通道滤波相关方法
+    def _update_spike_filter_coeffs(self):
+        """根据当前参数计算带通滤波器系数（Butterworth）"""
+        fs = float(self.spike_filter_fs)
+        low = max(1.0, float(self.spike_filter_low_cut))
+        high = min(fs/2 - 1.0, float(self.spike_filter_high_cut))
+        if high <= low:
+            high = low + 1.0
+        nyq = fs / 2.0
+        wn = [low/nyq, high/nyq]
+        try:
+            self._spike_filter_b, self._spike_filter_a = signal.butter(4, wn, btype='bandpass')
+        except Exception:
+            self._spike_filter_b, self._spike_filter_a = None, None
+
+    def _apply_spike_filter_buffer(self):
+        """对显示缓冲进行滤波，结果写入 spike_filtered_data"""
+        if not self.spike_filter_enabled:
+            return
+        if self._spike_filter_b is None or self._spike_filter_a is None:
+            self._update_spike_filter_coeffs()
+            if self._spike_filter_b is None:
+                return
+        x = np.array(self.spike_raw_data[0], dtype=np.float64)
+        nan_mask = np.isnan(x)
+        if np.all(nan_mask):
+            return
+        x[nan_mask] = 0.0
+        try:
+            y = signal.lfilter(self._spike_filter_b, self._spike_filter_a, x)
+        except Exception:
+            return
+        y[nan_mask] = np.nan
+        self.spike_filtered_data[0] = y
+
+    def on_spike_filter_toggle(self, checked):
+        self.spike_filter_enabled = bool(checked)
+        if self.spike_filter_enabled:
+            self._update_spike_filter_coeffs()
+            self._apply_spike_filter_buffer()
+        # 立即刷新显示
+        try:
+            if self.spike_filter_enabled:
+                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+            else:
+                self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0], pen=pg.mkPen({'color': 'w' ,'width':1}))
+        except Exception:
+            pass
+
+    def on_spike_filter_params_changed(self):
+        self.spike_filter_low_cut = float(self.spike1ch_tab.low_cut_spin.value())
+        self.spike_filter_high_cut = float(self.spike1ch_tab.high_cut_spin.value())
+        if self.spike_filter_enabled:
+            self._update_spike_filter_coeffs()
+            self._apply_spike_filter_buffer()
+            try:
+                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+            except Exception:
+                pass
+
+    def on_spike_sample_rate_changed(self, idx):
+        # 0 -> 12500 Hz ; 1 -> 20000 Hz
+        self.spike_filter_fs = 12500.0 if idx == 0 else 20000.0
+        if self.spike_filter_enabled:
+            self._update_spike_filter_coeffs()
+            self._apply_spike_filter_buffer()
+            try:
+                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+            except Exception:
+                pass
+
+    class _SpikeSpectrumDialog(QDialog):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Spike Spectrum")
+            self.resize(800, 400)
+            layout = QVBoxLayout(self)
+            self.plot_widget = pg.PlotWidget()
+            layout.addWidget(self.plot_widget)
+
+    def open_spike_spectrum(self):
+        """打开频谱窗口，计算当前显示缓冲的幅度谱"""
+        dlg = self._SpikeSpectrumDialog(self)
+        x = self.spike_filtered_data[0] if self.spike_filter_enabled else self.spike_raw_data[0]
+        try:
+            sig = np.array(x, dtype=np.float64)
+            sig[np.isnan(sig)] = 0.0
+            fs = float(self.spike_filter_fs)
+            n = len(sig)
+            if n > 1:
+                freqs = np.fft.rfftfreq(n, d=1.0/fs)
+                spectrum = np.abs(np.fft.rfft(sig))
+                dlg.plot_widget.plot(freqs, spectrum, pen=pg.mkPen({'color': 'y', 'width': 2}))
+                dlg.plot_widget.setLabel('bottom', 'Frequency', units='Hz')
+                dlg.plot_widget.setLabel('left', 'Amplitude')
+                dlg.plot_widget.setTitle("Spike Spectrum ({} Hz)".format(int(fs)))
+        except Exception:
+            pass
+        dlg.show()
+        dlg.exec()
         
     # data update function
     def update_plot_data(self, data):  # 注意：实际的一次更新得到的包的数量是在浮动的根据线程处理的速度
@@ -730,8 +850,14 @@ class ESBMainWindow(UI.MainWindow):
                 self.update_packet_loss(round(self.spikemisspackets_mode_1 /(self.spikemisspackets_mode_1 + self.spikeaccumulpackets_mode_1 + 1), 2) * 100)
                 # update channels index
                 self.spike_pI_channel.setTitle('channel {}'.format(self.spike_raw_channel))
-                # update data
-                self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0] ,pen=pg.mkPen({'color': 'w' ,'width':1}))
+                # update data（按需显示滤波）
+                if self.spike_filter_enabled:
+                    try:
+                        self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0] ,pen=pg.mkPen({'color': 'c' ,'width':1}))
+                    except Exception:
+                        pass
+                else:
+                    self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0] ,pen=pg.mkPen({'color': 'w' ,'width':1}))
  
                 #### raster data update
                 # update infinited line
@@ -815,10 +941,19 @@ class ESBMainWindow(UI.MainWindow):
                 ESA_raw_data = np.array(data[5]) * 100 # 放缩 到 lfp 一样的尺度
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
                 
+                # maz interval between packets
+                Interval_packets_max = 0
+                if(self.current_sample_mode == 0):
+                    Interval_packets_max = self.mSerial.LFP_max_interval
+                elif(self.current_sample_mode == 3):
+                    Interval_packets_max = self.mSerial.mode3_max_interval
+
                 # statitic dropped packets
                 temp_loss = np.diff(lfp_timestamp) 
-                temp_loss = temp_loss[(temp_loss > self.mSerial.LFP_max_interval) | (temp_loss <= 0)]
-                loss_packets_value = len(temp_loss // (self.mSerial.LFP_max_interval - 1))
+                temp_loss = temp_loss[(temp_loss > Interval_packets_max) | (temp_loss <= 0)]
+                loss_packets_value = len(temp_loss // (Interval_packets_max - 1))
+                # if(loss_packets_value > 0):
+                #     print("LFP data moide3:", Interval_packets_max, loss_packets_value)
                 self.lfpmisspackets +=  loss_packets_value
                 self.lfpaccumulpackets += len(lfp_timestamp)
                 # 每save file 10次就重新统计丢失的包的数量
@@ -883,7 +1018,7 @@ class ESBMainWindow(UI.MainWindow):
                         self.ring_spike_raster_pointer = endpoint # update indicater
         
 
-                """  mode 1  """
+                """  mode 1  & 3"""
             elif(int(data[0][0]) == 1):
                 """ spike raw data + raster data mode 1 """
                 self.spike_raw_channel = data[0][1]
@@ -892,10 +1027,20 @@ class ESBMainWindow(UI.MainWindow):
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
                 # curr timestamp
                 self.spike_timestamp_note = spike_timestamp_mode_1[0]
+                
+                # maz interval between packets
+                Interval_packets_max = 0
+                if(self.current_sample_mode == 1):
+                    Interval_packets_max = self.mSerial.Spike_max_interval
+                elif(self.current_sample_mode == 3):
+                    Interval_packets_max = self.mSerial.mode3_raw_max_interval
+    
                 # statitic dropped packets
                 temp_loss = np.diff(spike_timestamp_mode_1) 
-                temp_loss = temp_loss[(temp_loss > self.mSerial.Spike_max_interval) | (temp_loss <= 0)]
-                loss_packets_value = len(temp_loss // (self.mSerial.Spike_max_interval - 1))
+                temp_loss = temp_loss[(temp_loss > Interval_packets_max) | (temp_loss <= 0)]
+                loss_packets_value = len(temp_loss // (Interval_packets_max - 1))
+                # if(loss_packets_value > 0):
+                #     print("raw data moide3:", Interval_packets_max, temp_loss[temp_loss > 0])
                 self.spikemisspackets_mode_1 +=  loss_packets_value
                 self.spikeaccumulpackets_mode_1 += len(spike_timestamp_mode_1)
                 # 每save file一次就重新统计丢失的包的数量
@@ -915,6 +1060,9 @@ class ESBMainWindow(UI.MainWindow):
                 else:
                     self.spike_raw_data[0][self.ring_spike_pointer:endpoint] = spike_raw_data_mode_1
                     self.ring_spike_pointer = endpoint # update indicater
+                # 如果开启滤波，更新滤波缓冲
+                if self.spike_filter_enabled:
+                    self._apply_spike_filter_buffer()
 
                 # update raster data
                 endpoint = self.ring_spike_raster_pointer + len(spike_raster_data_mode_1[0])
@@ -1024,20 +1172,24 @@ class ESBMainWindow(UI.MainWindow):
             self.mSerial.start()
             # RF power control status update
             self.rf_power_status_update()
+            # # HABITS command
+            self.habits_tab.habits_panel.Neural_recorder_command.connect(self.HABITS_command_process)
         except:
             print(sys.exc_info())
-            QMessageBox.warning(self, "Warning", "Serial Port open failed")
+            QMessageBox.warning(self, "Warning", "Some init failed, please check the connection")
             pass
     
-    def update_carmera_status(self, status):
+    def update_carmera_status(self):
         # 如果摄像头处于记录状态就保存一次文文件
         if(self.toggle_recording_button.text() == "Stop recording"):
             self.toggle_recording()
         # 检查是否摄像头已经打开，否则打开摄像头
         if(self.toggle_camera_button.text() == "Open camera"):
             self.toggle_camera()
-        # 开始记录video
-        self.toggle_recording()
+        # 检查是否存在一个saving flag 为 true
+        if(self.mSerial.save_file_lfp_flag or self.mSerial.save_file_mode3_flag):
+            # 开始记录video
+            self.toggle_recording()
 
     def rf_power_on(self):
         """打开RF功率"""
@@ -1105,7 +1257,7 @@ class ESBMainWindow(UI.MainWindow):
         电池80% 以上， 关闭电源
         电池电量20% 以下， idle 模式
         """    
-        print("Current RSOC", self.RSOC)
+        # print("Current RSOC", self.RSOC)
         
         # 只有在RF串口连接时才进行自动控制
         if not self.rf_connected:
@@ -1135,41 +1287,125 @@ class ESBMainWindow(UI.MainWindow):
         self.update_battery_indicator(self.RSOC, self.Battery_STAT, self.Battery_voltage)
     
     def start_save_lfp(self):
+        # 文件路径检查
+        if not hasattr(self.lfp_tab, 'lfp_file_path_label') or self.lfp_tab.lfp_file_path_label.text() == "File path don't selected":
+            QMessageBox.warning(self, "warning", "请先选择LFP保存路径！")
+            return
+        # 互斥：仅开启LFP保存
         self.mSerial.save_file_lfp_flag = True
-        self.mSerial.lfp_file_addr = self.lfp_tab.file_path_label.text()
-        # mode1
-        self.mSerial.save_file_mode1_flag = True
-        self.mSerial.mode1_file_addr = self.lfp_tab.file_path_label.text()
-        # mode3
-        self.mSerial.save_file_mode3_flag = True
-        self.mSerial.mode3_file_addr = self.lfp_tab.file_path_label.text()
-    
+        self.mSerial.save_file_mode1_flag = False
+        self.mSerial.save_file_mode2_flag = False
+        self.mSerial.save_file_mode3_flag = False
+        # 路径设置
+        self.mSerial.lfp_file_addr = self.lfp_tab.lfp_file_path_label.text()
+        # 更新按钮状态
+        self.lfp_tab.start_save_button.setEnabled(False)
+        self.lfp_tab.stop_save_button.setEnabled(True)
+        # 关闭其他面板的保存按钮状态
+        self.spike1ch_tab.start_save_button.setEnabled(True)
+        self.spike1ch_tab.stop_save_button.setEnabled(False)
+        self.spike4ch_tab.start_save_button.setEnabled(True)
+        self.spike4ch_tab.stop_save_button.setEnabled(False)
+        self.lfp_tab.start_save_mode3_button.setEnabled(True)
+        self.lfp_tab.stop_save_mode3_button.setEnabled(False)
+        # 开始 video 记录
+        self.update_carmera_status()
+
     def stop_save_lfp(self):
         self.mSerial.save_file_lfp_flag = False
         # self.mSerial.lfp_file_addr = ""
-        # mode1
-        self.mSerial.save_file_mode1_flag = False
-        # self.mSerial.mode1_file_addr = ""
-        # mode3
+        # 更新按钮状态
+        self.lfp_tab.start_save_button.setEnabled(True)
+        self.lfp_tab.stop_save_button.setEnabled(False)
+
+    def start_save_mode1(self):
+        # 文件路径检查
+        if not hasattr(self.spike1ch_tab, 'mode1_file_path_label') or self.spike1ch_tab.mode1_file_path_label.text() == "File path don't selected":
+            QMessageBox.warning(self, "warning", "请先选择Mode1保存路径！")
+            return
+        # 互斥：仅开启Mode1保存
+        self.mSerial.save_file_lfp_flag = False
+        self.mSerial.save_file_mode1_flag = True
+        self.mSerial.save_file_mode2_flag = False
         self.mSerial.save_file_mode3_flag = False
-        # self.mSerial.mode3_file_addr = ""
+        # 路径设置
+        self.mSerial.mode1_file_addr = self.spike1ch_tab.mode1_file_path_label.text()
+        # 更新按钮状态
+        self.spike1ch_tab.start_save_button.setEnabled(False)
+        self.spike1ch_tab.stop_save_button.setEnabled(True)
+        self.lfp_tab.start_save_button.setEnabled(True)
+        self.lfp_tab.stop_save_button.setEnabled(False)
+        self.lfp_tab.start_save_mode3_button.setEnabled(True)
+        self.lfp_tab.stop_save_mode3_button.setEnabled(False)
+        self.spike4ch_tab.start_save_button.setEnabled(True)
+        self.spike4ch_tab.stop_save_button.setEnabled(False)
 
-    # def start_save_mode1(self):
-    #     self.mSerial.save_file_mode1_flag = True
-    #     self.mSerial.mode1_file_addr = self.lfp_tab.file_path_label.text() # TODO 这里需要修改,使用独立的按钮来选择mode1的保存路径
+    def stop_save_mode1(self):
+        self.mSerial.save_file_mode1_flag = False
+        # 更新按钮状态
+        self.spike1ch_tab.start_save_button.setEnabled(True)
+        self.spike1ch_tab.stop_save_button.setEnabled(False)
 
-    # def stop_save_mode1(self):
-    #     self.mSerial.save_file_mode1_flag = False
-    #     self.mSerial.mode1_file_addr = ""
-
-
+    
     def start_save_mode2(self):
+        # 文件路径检查
+        if not hasattr(self.spike4ch_tab, 'file_path_label') or self.spike4ch_tab.file_path_label.text() == "file path don't selected":
+            QMessageBox.warning(self, "warning", "请先选择Mode2保存路径！")
+            return
+        # 互斥：仅开启Mode2保存
+        self.mSerial.save_file_lfp_flag = False
+        self.mSerial.save_file_mode1_flag = False
         self.mSerial.save_file_mode2_flag = True
-        self.mSerial.mode2_file_addr = self.spike4ch_tab.file_path_label.text() 
+        self.mSerial.save_file_mode3_flag = False
+        # 路径设置
+        self.mSerial.mode2_file_addr = self.spike4ch_tab.file_path_label.text()
+        # 更新按钮状态
+        self.spike4ch_tab.start_save_button.setEnabled(False)
+        self.spike4ch_tab.stop_save_button.setEnabled(True)
+        self.lfp_tab.start_save_button.setEnabled(True)
+        self.lfp_tab.stop_save_button.setEnabled(False)
+        self.lfp_tab.start_save_mode3_button.setEnabled(True)
+        self.lfp_tab.stop_save_mode3_button.setEnabled(False)
+        self.spike1ch_tab.start_save_button.setEnabled(True)
+        self.spike1ch_tab.stop_save_button.setEnabled(False)
 
     def stop_save_mode2(self):
         self.mSerial.save_file_mode2_flag = False
         self.mSerial.mode2_file_addr = ""
+        # 更新按钮状态
+        self.spike4ch_tab.start_save_button.setEnabled(True)
+        self.spike4ch_tab.stop_save_button.setEnabled(False)
+
+    def start_save_mode3(self):
+        # 文件路径检查
+        if not hasattr(self.lfp_tab, 'mode3_file_path_label') or self.lfp_tab.mode3_file_path_label.text() == "File path don't selected":
+            QMessageBox.warning(self, "warning", "请先选择Mode3保存路径！")
+            return
+        # 互斥：仅开启Mode3保存
+        self.mSerial.save_file_lfp_flag = False
+        self.mSerial.save_file_mode1_flag = False
+        self.mSerial.save_file_mode2_flag = False
+        self.mSerial.save_file_mode3_flag = True
+        # 路径设置
+        self.mSerial.mode3_file_addr = self.lfp_tab.mode3_file_path_label.text()
+        # 更新按钮状态
+        self.lfp_tab.start_save_mode3_button.setEnabled(False)
+        self.lfp_tab.stop_save_mode3_button.setEnabled(True)
+        self.lfp_tab.start_save_button.setEnabled(True)
+        self.lfp_tab.stop_save_button.setEnabled(False)
+        self.spike4ch_tab.start_save_button.setEnabled(True)
+        self.spike4ch_tab.stop_save_button.setEnabled(False)
+        self.spike1ch_tab.start_save_button.setEnabled(True)
+        self.spike1ch_tab.stop_save_button.setEnabled(False)
+
+         # 开始 video 记录
+        self.update_carmera_status()
+
+    def stop_save_mode3(self):
+        self.mSerial.save_file_mode3_flag = False
+        # 更新按钮状态
+        self.lfp_tab.start_save_mode3_button.setEnabled(True)
+        self.lfp_tab.stop_save_mode3_button.setEnabled(False)
 
     def sample_start(self):
         self.mSerial.flush()
@@ -1182,8 +1418,9 @@ class ESBMainWindow(UI.MainWindow):
         self.close_command = [0x02 ,0x00] # invalid sample mode
         self.mSerial.send_data(self.close_command)
 
-    def sample_mode_switch(self): # 切换选项卡的时候就会触发 模式的改变
-        mode = self.sampling_mode_combo.currentIndex()
+    def sample_mode_switch(self, mode=None): # 切换选项卡的时候就会触发 模式的改变
+        if(mode == None):
+            mode = self.sampling_mode_combo.currentIndex()
         self.err = self.mSerial.send_data([0x00 ,0x03, int(hex(mode) ,16), 0x00])
         self.current_sample_mode = mode
         # 根据选择的采样模式跳转到对应选项卡
@@ -1266,6 +1503,25 @@ class ESBMainWindow(UI.MainWindow):
         print(self.IMU_command)
         self.err = self.mSerial.send_data(self.IMU_command)
 
+    def HABITS_command_process(self, command):
+        # 根据模式来开启和关闭当前trialblock的数据保存
+        if(int(command) == 1): # trial block end 
+            # mode3 file saved
+            self.mSerial.save_file_mode3_flag = False
+            if hasattr(self.lfp_tab, 'mode3_file_path_label'):
+                self.mSerial.mode3_file_addr = self.lfp_tab.mode3_file_path_label.text()
+            self.sample_mode_switch(int(command) - 1)  # 2 -> mode3; 1-> mode0
+            self.mSerial.save_file_lfp_flag = True
+        elif(int(command) == 4): # trial block onset -> file saving
+            # 保存 lfp 数据
+            self.mSerial.save_file_lfp_flag = False
+            # mode3 file save begin
+            self.sample_mode_switch(int(command) - 1)  # 2 -> mode3; 1-> mode0
+            self.mSerial.save_file_mode3_flag = True
+            if hasattr(self.lfp_tab, 'mode3_file_path_label'):
+                self.mSerial.mode3_file_addr = self.lfp_tab.mode3_file_path_label.text()
+
+        pass
     # def lfp_filter_on(self):
     #     self.mSerial.GUIUpdateInterval = 100 # TODO 增加更新间隔来增加filter 的窗口
     

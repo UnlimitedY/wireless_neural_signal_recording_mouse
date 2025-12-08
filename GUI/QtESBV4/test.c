@@ -63,7 +63,7 @@ u16_t mode_3_array_lfp_t[MODE_3_LFP_SIZE];
 u16_t mode_3_array_esa_t[MODE_3_ESA_SIZE];
 // mode3 原始数据缓冲计数与设定：累计4个chunk后合并一次性发送
 #define MODE3_RAW_BUFFER_CHUNKS 4
-u8_t mode3_raw_chunk_count = 0; // 当前已缓冲的chunk数量（0~4）
+static u8_t mode3_raw_chunk_count = 0; // 当前已缓冲的chunk数量（0~4）
 u16_t mode_3_array_t_raw[Channel_recorded][CHUNK_SIZE * MODE3_RAW_BUFFER_CHUNKS]; // 做一个缓冲来最大话利用esb包的空间；
 /***********************mode1, 2 spike********************* */
 u16_t spike_m_tx_buf[SPIKE_TX_BUFFER_SIZE]; 
@@ -407,24 +407,24 @@ u16_t init_RHD(){
         rhdspi_init();
         if(sampe_mode == 0){// 1.25Khz 16 channels: xx ms per packets keep the same ESB rate with mode3
                 // timer_period: 1000 / sample rate (KHz) / Channel_num 
-                // esb_set_tx_power(ESB_TX_POWER_0DBM); 
+                esb_set_tx_power(ESB_TX_POWER_0DBM); 
                 timer_period = 50; // 1000 / 1.25 / Channel_recorded
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
                 
         }else if(sampe_mode == 1){ // 20Khz 16 channels: xx ms per packets
-                // esb_set_tx_power(ESB_TX_POWER_4DBM); 
+                esb_set_tx_power(ESB_TX_POWER_4DBM); 
                 timer_period = 1000 / 20 / Channel_recorded_spike; // 5: 12500 Hz ; 6: 10417 Hz ;  3: 20833 Hz; 4: 15625 Hz (0 dummy)
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike);
         }else if(sampe_mode == 2){ 
                 // spike 20khz 4 channels
-                // esb_set_tx_power(ESB_TX_POWER_4DBM); 
+                esb_set_tx_power(ESB_TX_POWER_4DBM); 
                 timer_period = 1000 / 20 / Channel_recorded_spike;
                 reset_ticks_value = SPIKE_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_spike_raw);
         }else if(sampe_mode == 3){
-                // esb_set_tx_power(ESB_TX_POWER_4DBM); 
+                esb_set_tx_power(ESB_TX_POWER_4DBM); 
                 // spike 12.5khz + 1.25khz lfp 6 ms
                 timer_period = 5;  // 1000 / 12.5 / Channel_recorded
                 reset_ticks_value = MODE_3_SPI_RX_BUF_SIZE;
@@ -772,6 +772,7 @@ int main(void)
                         if(sampling){
                              timer_stop();   
                              low_power();
+                             esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
                              sampling = false;
                         }
                         /* sample mode switch */
@@ -833,11 +834,7 @@ int main(void)
                                         while(!esb_is_idle()){};
                                 }
                                 // select the esb params
-                                if(sampe_mode){
-                                        esb_set_retransmit_count(3);  
-                                }else{
-                                        esb_set_retransmit_count(1);  // 2 比较稳定
-                                }
+                                esb_set_retransmit_count(1);  // 2 比较稳定
                                 esb_set_rf_channel(rf_channel_list[rf_channel]);
 
                         }else{ // fast mode switch
