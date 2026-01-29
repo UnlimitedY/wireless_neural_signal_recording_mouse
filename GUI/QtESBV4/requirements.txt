@@ -6,4 +6,3 @@ scipy>=1.7.0
 pyserial>=3.5
 opencv-python>=4.5.0
 pyinstaller>=5.0.0
-pyedflib>=0.1.30

@@ -43,22 +43,22 @@ class RFPowerControlWidget(QWidget):
         
     def create_connection_group(self):
         """创建串口连接组"""
-        group = QGroupBox("串口连接")
+        group = QGroupBox("Serial Connection")
         layout = QVBoxLayout(group)
         
         # 串口选择行
         port_layout = QHBoxLayout()
-        port_layout.addWidget(QLabel("串口:"))
+        port_layout.addWidget(QLabel("Port:"))
         
         self.port_combo = QComboBox()
         self.port_combo.setMinimumWidth(120)
         port_layout.addWidget(self.port_combo)
         
-        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setMaximumWidth(60)
         port_layout.addWidget(self.refresh_btn)
         
-        self.connect_btn = QPushButton("连接")
+        self.connect_btn = QPushButton("Connect")
         self.connect_btn.setMaximumWidth(60)
         self.connect_btn.setStyleSheet("""
             QPushButton {
@@ -81,7 +81,7 @@ class RFPowerControlWidget(QWidget):
         layout.addLayout(port_layout)
         
         # 连接状态
-        self.connection_status = QLabel("状态: 未连接")
+        self.connection_status = QLabel("Status: Disconnected")
         self.connection_status.setStyleSheet("color: red; font-weight: bold;")
         layout.addWidget(self.connection_status)
         
@@ -89,13 +89,13 @@ class RFPowerControlWidget(QWidget):
         
     def create_control_group(self):
         """创建RF控制组"""
-        group = QGroupBox("RF功率控制")
+        group = QGroupBox("RF Power Control")
         layout = QVBoxLayout(group)
         
         # 控制按钮行
         button_layout = QHBoxLayout()
         
-        self.power_on_btn = QPushButton("打开RF功率")
+        self.power_on_btn = QPushButton("RF Power On")
         self.power_on_btn.setEnabled(False)
         self.power_on_btn.setStyleSheet("""
             QPushButton {
@@ -119,7 +119,7 @@ class RFPowerControlWidget(QWidget):
         """)
         button_layout.addWidget(self.power_on_btn)
         
-        self.power_off_btn = QPushButton("关闭RF功率")
+        self.power_off_btn = QPushButton("RF Power Off")
         self.power_off_btn.setEnabled(False)
         self.power_off_btn.setStyleSheet("""
             QPushButton {
@@ -143,7 +143,7 @@ class RFPowerControlWidget(QWidget):
         """)
         button_layout.addWidget(self.power_off_btn)
         
-        self.status_btn = QPushButton("查询状态")
+        self.status_btn = QPushButton("Query Status")
         self.status_btn.setEnabled(False)
         self.status_btn.setStyleSheet("""
             QPushButton {
@@ -170,7 +170,7 @@ class RFPowerControlWidget(QWidget):
         layout.addLayout(button_layout)
         
         # RF状态显示
-        self.rf_status = QLabel("RF状态: 未知")
+        self.rf_status = QLabel("RF Status: Unknown")
         self.rf_status.setStyleSheet("font-weight: bold; font-size: 12px;")
         layout.addWidget(self.rf_status)
         
@@ -178,7 +178,7 @@ class RFPowerControlWidget(QWidget):
         
     def create_status_group(self):
         """创建状态显示组"""
-        group = QGroupBox("操作日志")
+        group = QGroupBox("Activity Log")
         layout = QVBoxLayout(group)
         
         self.log_text = QTextEdit()
@@ -197,7 +197,7 @@ class RFPowerControlWidget(QWidget):
         layout.addWidget(self.log_text)
         
         # 清除日志按钮
-        clear_btn = QPushButton("清除日志")
+        clear_btn = QPushButton("Clear Log")
         clear_btn.setMaximumWidth(80)
         clear_btn.clicked.connect(self.log_text.clear)
         layout.addWidget(clear_btn)
@@ -221,13 +221,13 @@ class RFPowerControlWidget(QWidget):
             if ports:
                 for port in ports:
                     self.port_combo.addItem(f"{port.device} - {port.description}")
-                self.log_message(f"发现 {len(ports)} 个串口")
+                self.log_message(f"Found {len(ports)} serial ports")
             else:
-                self.port_combo.addItem("未发现串口")
-                self.log_message("未发现可用串口")
+                self.port_combo.addItem("No ports found")
+                self.log_message("No serial ports available")
                 
         except Exception as e:
-            self.log_message(f"刷新串口失败: {str(e)}")
+            self.log_message(f"Failed to refresh ports: {str(e)}")
             
     def toggle_connection(self):
         """切换串口连接状态"""
@@ -239,8 +239,8 @@ class RFPowerControlWidget(QWidget):
     def connect_serial(self):
         """连接串口"""
         try:
-            if self.port_combo.currentText() == "未发现串口":
-                QMessageBox.warning(self, "警告", "请先选择有效的串口")
+            if self.port_combo.currentText() == "No ports found":
+                QMessageBox.warning(self, "Warning", "Please select a valid port first")
                 return
                 
             port_text = self.port_combo.currentText()
@@ -253,7 +253,7 @@ class RFPowerControlWidget(QWidget):
             )
             
             self.is_connected = True
-            self.connect_btn.setText("断开")
+            self.connect_btn.setText("Disconnect")
             self.connect_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #F44336;
@@ -271,7 +271,7 @@ class RFPowerControlWidget(QWidget):
                 }
             """)
             
-            self.connection_status.setText(f"状态: 已连接到 {port_name}")
+            self.connection_status.setText(f"Status: Connected to {port_name}")
             self.connection_status.setStyleSheet("color: green; font-weight: bold;")
             
             # 启用控制按钮
@@ -279,11 +279,11 @@ class RFPowerControlWidget(QWidget):
             self.power_off_btn.setEnabled(True)
             self.status_btn.setEnabled(True)
             
-            self.log_message(f"成功连接到串口: {port_name}")
+            self.log_message(f"Connected to serial port: {port_name}")
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"连接串口失败: {str(e)}")
-            self.log_message(f"连接串口失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to connect serial port: {str(e)}")
+            self.log_message(f"Failed to connect serial port: {str(e)}")
             
     def disconnect_serial(self):
         """断开串口连接"""
@@ -294,7 +294,7 @@ class RFPowerControlWidget(QWidget):
             self.is_connected = False
             self.serial_connection = None
             
-            self.connect_btn.setText("连接")
+            self.connect_btn.setText("Connect")
             self.connect_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #4CAF50;
@@ -312,7 +312,7 @@ class RFPowerControlWidget(QWidget):
                 }
             """)
             
-            self.connection_status.setText("状态: 未连接")
+            self.connection_status.setText("Status: Disconnected")
             self.connection_status.setStyleSheet("color: red; font-weight: bold;")
             
             # 禁用控制按钮
@@ -320,23 +320,23 @@ class RFPowerControlWidget(QWidget):
             self.power_off_btn.setEnabled(False)
             self.status_btn.setEnabled(False)
             
-            self.rf_status.setText("RF状态: 未知")
-            self.log_message("串口连接已断开")
+            self.rf_status.setText("RF Status: Unknown")
+            self.log_message("Serial connection closed")
             
         except Exception as e:
-            self.log_message(f"断开串口失败: {str(e)}")
+            self.log_message(f"Failed to disconnect: {str(e)}")
             
     def power_on(self):
         """打开RF功率"""
         try:
             if not self.is_connected or not self.serial_connection:
-                QMessageBox.warning(self, "警告", "请先连接串口")
+                QMessageBox.warning(self, "Warning", "Please connect the serial port first")
                 return
                 
             # 发送打开命令: A0 01 03 A4
             command = bytes.fromhex('A0 01 03 A4')
             self.serial_connection.write(command)
-            self.log_message("发送打开RF功率命令: A0 01 03 A4")
+            self.log_message("Sent RF power on command: A0 01 03 A4")
             
             time.sleep(0.1)
             
@@ -345,35 +345,35 @@ class RFPowerControlWidget(QWidget):
             if n > 0:
                 response = self.serial_connection.read(n)
                 response_hex = binascii.b2a_hex(response).decode()
-                self.log_message(f"收到响应: {response_hex}")
+                self.log_message(f"Received response: {response_hex}")
                 
                 # 解析状态
                 if len(response_hex) >= 2:
                     status = response_hex[-2]
                     if status == '2':
-                        self.rf_status.setText("RF状态: 已打开")
+                        self.rf_status.setText("RF Status: On")
                         self.rf_status.setStyleSheet("color: green; font-weight: bold; font-size: 12px;")
                     else:
-                        self.rf_status.setText("RF状态: 已关闭")
+                        self.rf_status.setText("RF Status: Off")
                         self.rf_status.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
             else:
-                self.log_message("未收到响应")
+                self.log_message("No response received")
                 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"打开RF功率失败: {str(e)}")
-            self.log_message(f"打开RF功率失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to turn RF power on: {str(e)}")
+            self.log_message(f"Failed to turn RF power on: {str(e)}")
             
     def power_off(self):
         """关闭RF功率"""
         try:
             if not self.is_connected or not self.serial_connection:
-                QMessageBox.warning(self, "警告", "请先连接串口")
+                QMessageBox.warning(self, "Warning", "Please connect the serial port first")
                 return
                 
             # 发送关闭命令: A0 01 02 A3
             command = bytes.fromhex('A0 01 02 A3')
             self.serial_connection.write(command)
-            self.log_message("发送关闭RF功率命令: A0 01 02 A3")
+            self.log_message("Sent RF power off command: A0 01 02 A3")
             
             time.sleep(0.1)
             
@@ -382,35 +382,35 @@ class RFPowerControlWidget(QWidget):
             if n > 0:
                 response = self.serial_connection.read(n)
                 response_hex = binascii.b2a_hex(response).decode()
-                self.log_message(f"收到响应: {response_hex}")
+                self.log_message(f"Received response: {response_hex}")
                 
                 # 解析状态
                 if len(response_hex) >= 2:
                     status = response_hex[-2]
                     if status == '1':
-                        self.rf_status.setText("RF状态: 已关闭")
+                        self.rf_status.setText("RF Status: Off")
                         self.rf_status.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
                     else:
-                        self.rf_status.setText("RF状态: 已打开")
+                        self.rf_status.setText("RF Status: On")
                         self.rf_status.setStyleSheet("color: green; font-weight: bold; font-size: 12px;")
             else:
-                self.log_message("未收到响应")
+                self.log_message("No response received")
                 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"关闭RF功率失败: {str(e)}")
-            self.log_message(f"关闭RF功率失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to turn RF power off: {str(e)}")
+            self.log_message(f"Failed to turn RF power off: {str(e)}")
             
     def query_status(self):
         """查询RF状态"""
         try:
             if not self.is_connected or not self.serial_connection:
-                QMessageBox.warning(self, "警告", "请先连接串口")
+                QMessageBox.warning(self, "Warning", "Please connect the serial port first")
                 return
                 
             # 发送查询命令: A0 01 05 A6
             command = bytes.fromhex('A0 01 05 A6')
             self.serial_connection.write(command)
-            self.log_message("发送查询状态命令: A0 01 05 A6")
+            self.log_message("Sent query status command: A0 01 05 A6")
             
             time.sleep(0.1)
             
@@ -419,26 +419,26 @@ class RFPowerControlWidget(QWidget):
             if n > 0:
                 response = self.serial_connection.read(n)
                 response_hex = binascii.b2a_hex(response).decode()
-                self.log_message(f"收到响应: {response_hex}")
+                self.log_message(f"Received response: {response_hex}")
                 
                 # 解析状态
                 if len(response_hex) >= 2:
                     status = response_hex[-2]
                     if status == '2':
-                        self.rf_status.setText("RF状态: 已打开")
+                        self.rf_status.setText("RF Status: On")
                         self.rf_status.setStyleSheet("color: green; font-weight: bold; font-size: 12px;")
                     elif status == '1':
-                        self.rf_status.setText("RF状态: 已关闭")
+                        self.rf_status.setText("RF Status: Off")
                         self.rf_status.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
                     else:
-                        self.rf_status.setText("RF状态: 未知")
+                        self.rf_status.setText("RF Status: Unknown")
                         self.rf_status.setStyleSheet("color: orange; font-weight: bold; font-size: 12px;")
             else:
-                self.log_message("未收到响应")
+                self.log_message("No response received")
                 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"查询状态失败: {str(e)}")
-            self.log_message(f"查询状态失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Query failed: {str(e)}")
+            self.log_message(f"Query failed: {str(e)}")
             
     def log_message(self, message):
         """添加日志消息"""
@@ -462,14 +462,14 @@ class serialPowerControl():
     def open(self):
         d=bytes.fromhex('A0 01 03 A4')
         self.s.write(d)
-        print("打开继电器！！！！！！！！")
+        print("Relay on")
         time.sleep(0.1)
         n = self.s.in_waiting
         self.status = str(binascii.b2a_hex(self.s.read(n)))[2:-1]
     def close(self):
         d = bytes.fromhex('A0 01 02 A3')
         self.s.write(d)
-        print("关闭继电器！！！！！！！！")
+        print("Relay off")
         time.sleep(0.1)
         n = self.s.in_waiting
         self.status = str(binascii.b2a_hex(self.s.read(n)))[-2] # open: 2; close: 1
@@ -477,7 +477,7 @@ class serialPowerControl():
     def read_status(self):
         """读取继电器状态"""
         if not self.serial_connection:
-            self.log_message("错误：串口未连接")
+            self.log_message("Error: serial not connected")
             return
         
         try:
@@ -486,10 +486,10 @@ class serialPowerControl():
             time.sleep(0.1)
             n = self.serial_connection.in_waiting
             status = str(binascii.b2a_hex(self.serial_connection.read(n)))[-2]
-            status_text = "开启" if status == '2' else "关闭"
-            self.log_message(f"继电器状态: {status_text}")
+            status_text = "On" if status == '2' else "Off"
+            self.log_message(f"Relay status: {status_text}")
         except Exception as e:
-            self.log_message(f"读取状态失败: {str(e)}")
+            self.log_message(f"Failed to read status: {str(e)}")
 
 
 # 测试代码
@@ -501,7 +501,7 @@ if __name__ == "__main__":
     
     # 创建RF功率控制窗口
     rf_control = RFPowerControlWidget()
-    rf_control.setWindowTitle("RF功率控制")
+    rf_control.setWindowTitle("RF Power Control")
     rf_control.resize(400, 500)
     rf_control.show()
     

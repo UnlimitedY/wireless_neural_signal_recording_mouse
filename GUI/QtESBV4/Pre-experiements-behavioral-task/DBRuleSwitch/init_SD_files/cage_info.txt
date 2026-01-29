@@ -1,0 +1,2 @@
+cage_id = 3
+task = DBRuleSwitch

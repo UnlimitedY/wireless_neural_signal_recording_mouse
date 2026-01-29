@@ -1,3 +1,4 @@
+from ast import Pass
 from PyQt6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
     QMetaObject, QObject, QPoint, QRect,
     QSize, QTime, QUrl, Qt)
@@ -6,7 +7,6 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFrame, QHBoxLayout,
     QSizePolicy, QSpinBox, QStatusBar, QTextBrowser,
     QVBoxLayout, QWidget ,QMessageBox, QDialog)
 from PyQt6.QtGui import QFont
-# 在文件开头的导入部分添加
 from scipy import signal
 from scipy.fft import fft, fftfreq
 import numpy as np
@@ -33,6 +33,98 @@ from PyQt6 import QtCore, QtWidgets
 import time
 from multiprocessing import Process ,Queue
 from scipy.fftpack import fft
+import re
+import logging
+from logging.handlers import RotatingFileHandler
+import traceback
+
+def setup_logging():
+    """Setup logging configuration"""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # Add timestamp to log filename
+    current_time = time.strftime("%Y-%m-%d_%H-%M-%S")
+    log_file = os.path.join(log_dir, f"neural_recorder_crash_{current_time}.log")
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Exception hook to log unhandled exceptions
+    def exception_hook(exctype, value, tb):
+        logging.error("Uncaught exception:", exc_info=(exctype, value, tb))
+        # Call the original excepthook
+        sys.__excepthook__(exctype, value, tb)
+        
+    sys.excepthook = exception_hook
+    
+    logging.info("Application started - Logging initialized")
+
+def safe_guard(func):
+    """Decorator to catch and log exceptions in methods"""
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logging.error(f"Error in {func.__name__}: {e}", exc_info=True)
+    return wrapper
+
+# Module level constants for safe float conversion
+_RE_INCOMPLETE_SCI = re.compile(r'^[+-]?\d+(?:\.\d+)?[eE][+-]?$')
+_RE_HEX = re.compile(r'^(?:0x)?[0-9a-fA-F]+$')
+_RE_FLOAT_PREFIX = re.compile(r'^[+-]?\d+(?:\.\d+)?')
+
+def _safe_float_fast(v):
+    """Optimized safe float conversion"""
+    try:
+        # Fast path for standard types
+        if isinstance(v, (float, int, np.floating, np.integer)):
+            return float(v)
+            
+        # String handling
+        s = str(v).strip()
+        if not s:
+            return np.nan
+            
+        # Try direct conversion first (fastest for valid strings)
+        try:
+            return float(s)
+        except ValueError:
+            pass
+            
+        # Incomplete scientific notation
+        if _RE_INCOMPLETE_SCI.match(s):
+            try:
+                return float(s + '0')
+            except ValueError:
+                return np.nan
+                
+        # Hexadecimal
+        if _RE_HEX.match(s):
+            try:
+                return float(int(s, 16))
+            except ValueError:
+                return np.nan
+                
+        # Prefix extraction
+        m = _RE_FLOAT_PREFIX.match(s)
+        if m:
+            try:
+                return float(m.group(0))
+            except ValueError:
+                return np.nan
+                
+        return np.nan
+    except Exception:
+        return np.nan
 
 
 # 添加新的LFP频谱窗口类
@@ -204,6 +296,11 @@ class LFPSpectrumWindow(QMainWindow):
         """更新频谱显示"""
         if self.parent is None or not hasattr(self.parent, 'LFP_raw_data'):
             return
+        try:
+            if hasattr(self.parent, "plot_update_enabled") and (not self.parent.plot_update_enabled):
+                return
+        except Exception:
+            pass
         
         try:
             current_mode = self.mode_combo.currentText()
@@ -309,15 +406,85 @@ class LFPSpectrumWindow(QMainWindow):
 
 
 """main class"""
+import threading
+import sys
+import os
+import traceback
+import time
+
+class MainThreadWatchdog(threading.Thread):
+    """
+    Watchdog thread to monitor the main thread for freezes.
+    It periodically checks if the main thread has updated a timestamp.
+    If the timestamp hasn't been updated for `timeout` seconds, it logs the stack trace.
+    """
+    def __init__(self, main_window, timeout=5.0, check_interval=1.0):
+        super().__init__(daemon=True)
+        self.main_window = main_window
+        self.timeout = timeout
+        self.check_interval = check_interval
+        self.running = True
+        self.name = "MainThreadWatchdog"
+
+    def run(self):
+        logging.info("Watchdog started")
+        while self.running:
+            time.sleep(self.check_interval)
+            try:
+                # Check if main thread is alive
+                last_alive = getattr(self.main_window, 'last_alive_timestamp', 0)
+                if time.time() - last_alive > self.timeout:
+                    # Main thread is stuck!
+                    logging.warning(f"Watchdog: Main thread unresponsive for {time.time() - last_alive:.1f}s")
+                    
+                    # Get main thread stack trace
+                    # Main thread id is usually the starting thread.
+                    # We can iterate over all threads to find the one that matches main thread ID if needed,
+                    # or just dump all threads.
+                    self._log_all_thread_stacks()
+                    
+                    # Don't spam logs too much, maybe wait longer before next log
+                    time.sleep(self.timeout) 
+            except Exception as e:
+                logging.error(f"Watchdog error: {e}")
+
+    def _log_all_thread_stacks(self):
+        """Log stack traces of all running threads"""
+        id2name = dict([(th.ident, th.name) for th in threading.enumerate()])
+        code = []
+        for threadId, stack in sys._current_frames().items():
+            threadName = id2name.get(threadId, "")
+            code.append(f"\n# Thread: {threadName}({threadId})")
+            for filename, lineno, name, line in traceback.extract_stack(stack):
+                code.append(f'File: "{filename}", line {lineno}, in {name}')
+                if line:
+                    code.append(f"  {line.strip()}")
+        
+        logging.warning("\n".join(code))
+
 class ESBMainWindow(UI.MainWindow):
     def __init__(self):
         super(ESBMainWindow ,self).__init__()
+        
+        # Initialize watchdog timestamp
+        self.last_alive_timestamp = time.time()
+        
+        # Start watchdog timer (updates timestamp in main thread)
+        self.watchdog_timer = QTimer()
+        self.watchdog_timer.timeout.connect(self._kick_watchdog)
+        self.watchdog_timer.start(500) # Kick every 500ms
+        
+        # Start watchdog thread
+        self.watchdog = MainThreadWatchdog(self)
+        self.watchdog.start()
 
         """ hyper """
+        self.plot_update_enabled = False
         self.Auto_ST_Update = False
         self.Auto_ST_Update_flag = False
         self.channel_panding = None
         self.single_update_data_size = 0
+        self.spike1ch_rms_pending = 0
         self.colorList = ['#e6194B', '#3cb44b', '#ffe119', '#4363d8', 
                           '#f58231', '#42d4f4', '#f032e6', '#fabed4', 
                           '#469990', '#dcbeff', '#9A6324', '#fffac8', 
@@ -345,7 +512,7 @@ class ESBMainWindow(UI.MainWindow):
         self.spike_sample_rate = 20833 # 20khz default
         self.spike_raster_bin = 18
         ## display lengths
-        self.chart_x_length_s = 10 # 10s
+        self.chart_x_length_s = 5 # 5s
         self.update_packets_num = 0  # genarated data points when GUI update is enabled; determined by @param GUIUpdateInterval ; packets number
         self.lfp_display_data_num = self.lfp_sample_rate * self.chart_x_length_s # 在plot中一次展示的windows的个数,通过采样频率来确定
         self.spike_display_data_num = self.spike_sample_rate * self.chart_x_length_s // 5
@@ -429,16 +596,35 @@ class ESBMainWindow(UI.MainWindow):
 
         self.RF_timer = QTimer()
         self.RF_timer.timeout.connect(self.rf_power_control)
-        self.RF_timer.start(1000 * 60 * 10)  # 每500ms更新一次
+        self.RF_timer.start(1000 * 60)  # 每1分钟更新一次RF状态
         
         # 连接RF按钮信号
         self.rf_power_on_button.clicked.connect(self.rf_power_on)
         self.rf_power_off_button.clicked.connect(self.rf_power_off)
+        if hasattr(self, 'rf_status_button'):
+            self.rf_status_button.clicked.connect(self.rf_query_status)
+        if hasattr(self, 'rf_channel_combo'):
+            self.rf_channel_combo.currentIndexChanged.connect(self.rf_query_status)
         
         # Spike threshold auto update buffer
         self.calcST_counter = [0 for _ in range(self.spike_channel_num)]
         self.computedST = [0 for _ in range(self.spike_channel_num)]
         self.updateSTflag = [0 for _ in range(self.spike_channel_num)]
+
+        self.plot_update_toggle_button = QPushButton("Plot Update: Off")
+        self.plot_update_toggle_button.setCheckable(True)
+        self.plot_update_toggle_button.setChecked(False)
+        self.plot_update_toggle_button.setMinimumHeight(35)
+        self.plot_update_toggle_button.setMinimumWidth(140)
+        self.plot_update_toggle_button.clicked.connect(self.on_plot_update_toggle_clicked)
+        self._refresh_plot_update_toggle_style()
+        try:
+            control_layout = self.stop_sampling_button.parentWidget().layout()
+            if control_layout is not None:
+                idx = control_layout.indexOf(self.stop_sampling_button)
+                control_layout.insertWidget(idx + 1, self.plot_update_toggle_button)
+        except Exception:
+            pass
 
         """ build  widgets containing these charts """
         pg.setConfigOption('background', 'k')
@@ -462,8 +648,7 @@ class ESBMainWindow(UI.MainWindow):
         self.spike_pI_channel.addLegend()
 
         # updating indicate lines: infiniteLine  
-        self.spike_updating_indicater_mode_1 = pg.InfiniteLine(movable=False, label='', angle=90, pen=pg.mkPen(color='w', width=3), 
-                                  labelOpts={'position':0.9, 'color':'y', 'fill': (200,200,200,50)})
+        self.spike_updating_indicater_mode_1 = pg.InfiniteLine(movable=False, angle=90, pen=pg.mkPen(color='w', width=3))
         self.spike_v1_channel.addItem(self.spike_updating_indicater_mode_1)
 
         self.raw_threshold_channel = pg.PlotCurveItem(None ,None ,pen='#DC143C') # threshold line
@@ -471,7 +656,13 @@ class ESBMainWindow(UI.MainWindow):
 
         self.raw_dataline_channel = pg.PlotCurveItem(None, None ,name='channel 0-15') # raw data of one channel line
         self.spike_v1_channel.addItem(self.raw_dataline_channel)
-        self.spike_v1_channel.enableAutoRange(axis= pg.ViewBox.XYAxes ,enable = True)
+        
+        # Alignment signal curve (Mode 3)
+        self.alignment_curve = pg.PlotCurveItem(None, None, pen=pg.mkPen({'color': 'r', 'width': 2}), name='Alignment')
+        self.spike_v1_channel.addItem(self.alignment_curve)
+        self.alignment_buffer = np.zeros(self.spike_display_data_num)
+        
+        self.spike_v1_channel.enableAutoRange(axis= pg.ViewBox.XYAxes ,enable = False)
 
         self.spike_v1_channel.setLimits(xMin=0, xMax=self.spike_display_data_num, yMin=-2000, yMax=2000) # 1mv range
         self.spike_v1_channel.setXRange(0 ,self.spike_display_data_num)
@@ -517,7 +708,7 @@ class ESBMainWindow(UI.MainWindow):
             self.spike_raster_channel.append(pg.ScatterPlotItem(None, None,pen='#FFFFFF'))
             self.spike_raster_channel[i].setSymbol('arrow_up')
             self.SR_v1_channel.addItem(self.spike_raster_channel[i])
-        self.SR_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.SR_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = False)
         self.SR_v1_channel.setLimits(xMin=0, xMax=self.spike_raster_display_data_num, yMin=-1, yMax=16) # 1mv range
         self.SR_v1_channel.setYRange(-1 ,16) 
         self.SR_v1_channel.setXRange(0 ,self.spike_raster_display_data_num) 
@@ -554,8 +745,7 @@ class ESBMainWindow(UI.MainWindow):
             self.LFP_v1_channel.addItem(esa_channel)
             
         # updating indicate lines: infiniteLine  
-        self.updating_indicater = pg.InfiniteLine(movable=False, label='', angle=90, pen=pg.mkPen(color='w', width=3), 
-                                  labelOpts={'position':0.99, 'color':'y', 'fill': (200,200,200,50)})
+        self.updating_indicater = pg.InfiniteLine(movable=False, angle=90, pen=pg.mkPen(color='w', width=3))
         self.LFP_v1_channel.addItem(self.updating_indicater)
         
         # 更新ticks设置，显示32个通道（LFP和ESA交替）
@@ -571,7 +761,7 @@ class ESBMainWindow(UI.MainWindow):
             
         self.LFP_pI_channel.getAxis("left").setTicks([combined_ticks.items()])
 
-        self.LFP_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.LFP_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = False)
         # 更新Y轴范围以适应32个通道（16个LFP + 16个ESA）
         total_channels = self.lfp_channel_num * 2  # 32个通道
         self.LFP_v1_channel.setLimits(xMin=0, xMax=self.lfp_display_data_num, yMin=-self.separate_interval , yMax=(total_channels + 1) * self.separate_interval)
@@ -599,10 +789,9 @@ class ESBMainWindow(UI.MainWindow):
             self.AP_raw_channel.append(pg.PlotCurveItem(None, None,pen='#FFFFFF'))
             self.AP_v1_channel.addItem(self.AP_raw_channel[i])
         # updating indicate lines: infiniteLine  
-        self.AP_updating_indicater = pg.InfiniteLine(movable=False, label='', angle=90, pen=pg.mkPen(color='w', width=3), 
-                                  labelOpts={'position':0.99, 'color':'y', 'fill': (200,200,200,50)})
+        self.AP_updating_indicater = pg.InfiniteLine(movable=False, angle=90, pen=pg.mkPen(color='w', width=3))
         self.AP_v1_channel.addItem(self.AP_updating_indicater)
-
+        
         # spike ticks setting
         spike_mode2_ticks = {
             int(value):'channel{}'.format(channel) for value, channel in 
@@ -639,7 +828,7 @@ class ESBMainWindow(UI.MainWindow):
                                   labelOpts={'position':0.9, 'color':(150,0,0), 'fill': (200,200,200,50)})
         self.accl_v1_channel.addItem(self.accle_updating_indicater)
         
-        self.accl_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = True)
+        self.accl_v1_channel.enableAutoRange(axis=pg.ViewBox.XYAxes ,enable = False)
         self.accl_v1_channel.setLimits(xMin=0, xMax=self.LSR_display_data_num, yMin=-self.IMU_yrange_accle, yMax=self.IMU_yrange_accle) # 1mv range
         self.accl_v1_channel.setXRange(0 ,self.LSR_display_data_num) 
         self.accl_v1_channel.setYRange(-self.IMU_yrange_accle ,self.IMU_yrange_accle)
@@ -690,7 +879,21 @@ class ESBMainWindow(UI.MainWindow):
         self.lfp_tab.control_panel_layout.addWidget(self.spectrum_window_button)
         # Spectrum window instance
         self.spectrum_window = None
+
+        # Connect Habits Panel Trial Start signal
+        if hasattr(self, 'habits_tab') and hasattr(self.habits_tab, 'habits_panel'):
+            self.habits_tab.habits_panel.TrialStarted.connect(self.on_trial_start)
     
+    def on_trial_start(self):
+        """Handle trial start signal from Habits Panel"""
+        if self.mSerial:
+            self.mSerial.trigger_alignment()
+            # Optionally log
+            # self.log_message("Trial Start detected, alignment signal triggered", level="info")
+
+    def _kick_watchdog(self):
+        """Update the timestamp to prove the main thread is alive"""
+        self.last_alive_timestamp = time.time()
 
     def open_spectrum_window(self):
         """Open LFP spectrum analysis window"""
@@ -743,10 +946,33 @@ class ESBMainWindow(UI.MainWindow):
             self._apply_spike_filter_buffer()
         # 立即刷新显示
         try:
+            if self.plot_update_enabled:
+                if self.spike_filter_enabled:
+                    self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+                else:
+                    self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0], pen=pg.mkPen({'color': 'w' ,'width':1}))
+        except Exception:
+            pass
+
+    def _update_spike1ch_rms_label(self):
+        try:
             if self.spike_filter_enabled:
-                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+                y = self.spike_filtered_data[0]
             else:
-                self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0], pen=pg.mkPen({'color': 'w' ,'width':1}))
+                y = self.spike_raw_data[0]
+
+            y = np.asarray(y, dtype=np.float64)
+            mask = np.isfinite(y)
+            if not np.any(mask):
+                rms = np.nan
+            else:
+                rms = float(np.sqrt(np.mean(y[mask] * y[mask])))
+
+            if hasattr(self, 'spike1ch_tab') and hasattr(self.spike1ch_tab, 'rms_label'):
+                if np.isfinite(rms):
+                    self.spike1ch_tab.rms_label.setText(f"{rms:.1f} uVrms")
+                else:
+                    self.spike1ch_tab.rms_label.setText("-- uVrms")
         except Exception:
             pass
 
@@ -757,7 +983,8 @@ class ESBMainWindow(UI.MainWindow):
             self._update_spike_filter_coeffs()
             self._apply_spike_filter_buffer()
             try:
-                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+                if self.plot_update_enabled:
+                    self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
             except Exception:
                 pass
 
@@ -768,10 +995,33 @@ class ESBMainWindow(UI.MainWindow):
             self._update_spike_filter_coeffs()
             self._apply_spike_filter_buffer()
             try:
-                self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
+                if self.plot_update_enabled:
+                    self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0], pen=pg.mkPen({'color': 'c' ,'width':1}))
             except Exception:
                 pass
 
+    def _refresh_plot_update_toggle_style(self):
+        if self.plot_update_enabled:
+            self.plot_update_toggle_button.setText("Plot Update: On")
+            self.plot_update_toggle_button.setStyleSheet(
+                "QPushButton { background-color: #4CAF50; color: white; border: none; border-radius: 6px; padding: 6px 10px; font-weight: bold; }"
+                "QPushButton:pressed { background-color: #43A047; }"
+            )
+        else:
+            self.plot_update_toggle_button.setText("Plot Update: Off")
+            self.plot_update_toggle_button.setStyleSheet(
+                "QPushButton { background-color: #F44336; color: white; border: none; border-radius: 6px; padding: 6px 10px; font-weight: bold; }"
+                "QPushButton:pressed { background-color: #E53935; }"
+            )
+
+    def on_plot_update_toggle_clicked(self, checked: bool):
+        self.plot_update_enabled = bool(checked)
+        self._refresh_plot_update_toggle_style()
+        if self.plot_update_enabled:
+            self.statusBar().showMessage("Plot updates enabled")
+        else:
+            self.statusBar().showMessage("Plot updates disabled (data refresh paused)")
+        
     class _SpikeSpectrumDialog(QDialog):
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -803,76 +1053,76 @@ class ESBMainWindow(UI.MainWindow):
         dlg.exec()
         
     # data update function
+    @safe_guard
     def update_plot_data(self, data):  # 注意：实际的一次更新得到的包的数量是在浮动的根据线程处理的速度
         if self.curr_active_ports is not None:
-            self.raw_data_generator(self.curr_active_ports, data)
+            self.raw_data_generator(self.curr_active_ports, data, update_buffers=self.plot_update_enabled)
+            
+            # Optimization: If plot updates are disabled, skip ALL plot updates
+            if not self.plot_update_enabled:
+                # Still update battery/status indicators as they are low frequency
+                try:
+                    # Update battery if needed (it's updated in raw_data_generator but also timeline here?)
+                    # No, timeline update is separate.
+                    pass
+                except:
+                    pass
+                return
+
             if(int(data[0][0]) == 0):
                 """ LFP raw data update """
                 # # update infinited line
                 self.updating_indicater.setPos(self.ring_lfp_pointer) # span (0, 1)
-                self.updating_indicater.label.setFormat('loss:{}/{}'.format(self.lfpmisspackets, self.lfpaccumulpackets))
+                self.LFP_pI_channel.setTitle('LFP data 16 channels <span style="color: yellow; font-size: 10pt">loss:{}/{}</span>'.format(self.lfpmisspackets, self.lfpaccumulpackets))
                 ## update rssi
                 self.update_rssi(self.mSerial.rssi)
                 ## update loss rate
                 self.update_packet_loss(round(self.lfpmisspackets /(self.lfpaccumulpackets + self.lfpmisspackets + 1), 2) * 100) # +1 防止divide zero
-                # update LFP data
-                for i in range(16): # diff color diff channels separate_interval
-                    self.LFP_raw_channel[i].setData(self.LFP_x, self.LFP_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+                if self.plot_update_enabled:
+                    for i in range(16): # diff color diff channels separate_interval
+                        self.LFP_raw_channel[i].setData(self.LFP_x, self.LFP_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
 
-                # update ESA data
-                for i in range(16): # ESA channels with different colors
-                    self.ESA_raw_channel[i].setData(self.ESA_x, self.ESA_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1, "style": QtCore.Qt.PenStyle.DashLine}))  # 使用PyQt6枚举修正虚线样式
-
-                 #### raster data update
-                # update infinited line
-                self.spike_raster_updating_indicater_mode_1.setPos(self.ring_spike_raster_pointer)
-                # update data
-                if(np.isnan(self.spike_raster_data).any() == False):
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        for i in range(16): # diff color diff channels separate_interval
-                            self.spike_raster_data[i][self.spike_raster_data[i] == 0] = -1
-                            self.spike_raster_channel[i].setData(self.spike_raster_x, self.spike_raster_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
-                    # update spike rate data
-                    self.spike_raster_data[self.spike_raster_data == -1] = 0
-                    self.SR_value[0] = my_gaussian_filter1d(np.sum(self.spike_raster_data ,axis=0) ,sigma=10)
-                    self.spike_SR_channel.setData(self.spike_raster_x ,self.SR_value[0]  ,pen=pg.mkPen({'color': 'w' ,'width':2}))  # ,fillLevel=10, fillBrush=(255,255,255,30)
+                    for i in range(16): # ESA channels with different colors
+                        self.ESA_raw_channel[i].setData(self.ESA_x, self.ESA_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1, "style": QtCore.Qt.PenStyle.DashLine}))  # 使用PyQt6枚举修正虚线样式
+                    
             
             elif(int(data[0][0]) == 1):
                 """ spike data mode 1 """ 
                 #### raw data update
                 # update indicte line
                 self.spike_updating_indicater_mode_1.setPos(self.ring_spike_pointer)
-                self.spike_updating_indicater_mode_1.label.setFormat('loss: {}/{} time: {} s'.format(self.spikemisspackets_mode_1, self.spikeaccumulpackets_mode_1, self.spike_timestamp_note // 1000))
+                self.spike_pI_channel.setTitle('channel {} <span style="color: yellow; font-size: 10pt">loss: {}/{} time: {} s</span>'.format(self.spike_raw_channel, self.spikemisspackets_mode_1, self.spikeaccumulpackets_mode_1, self.spike_timestamp_note // 1000))
                 ## update rssi
                 self.update_rssi(self.mSerial.rssi)
                 ## update loss rate
                 self.update_packet_loss(round(self.spikemisspackets_mode_1 /(self.spikemisspackets_mode_1 + self.spikeaccumulpackets_mode_1 + 1), 2) * 100)
                 # update channels index
-                self.spike_pI_channel.setTitle('channel {}'.format(self.spike_raw_channel))
-                # update data（按需显示滤波）
-                if self.spike_filter_enabled:
-                    try:
-                        self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0] ,pen=pg.mkPen({'color': 'c' ,'width':1}))
-                    except Exception:
-                        pass
-                else:
-                    self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0] ,pen=pg.mkPen({'color': 'w' ,'width':1}))
+                # self.spike_pI_channel.setTitle('channel {}'.format(self.spike_raw_channel))
+                if self.plot_update_enabled:
+                    if self.spike_filter_enabled:
+                        try:
+                            self.raw_dataline_channel.setData(self.spike_x, self.spike_filtered_data[0] ,pen=pg.mkPen({'color': 'c' ,'width':1}))
+                        except Exception:
+                            pass
+                    else:
+                        self.raw_dataline_channel.setData(self.spike_x, self.spike_raw_data[0] ,pen=pg.mkPen({'color': 'w' ,'width':1}))
+                    
+                    # Update alignment curve
+                    self.alignment_curve.setData(self.spike_x, self.alignment_buffer)
  
                 #### raster data update
                 # update infinited line
                 self.spike_raster_updating_indicater_mode_1.setPos(self.ring_spike_raster_pointer)
-                # update data
-                if(np.isnan(self.spike_raster_data).any() == False):
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        for i in range(16): # diff color diff channels separate_interval
-                            self.spike_raster_data[i][self.spike_raster_data[i] == 0] = -1
-                            self.spike_raster_channel[i].setData(self.spike_raster_x, self.spike_raster_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
-                    # update spike rate data
-                    self.spike_raster_data[self.spike_raster_data == -1] = 0
-                    self.SR_value[0] = my_gaussian_filter1d(np.sum(self.spike_raster_data ,axis=0) ,sigma=10)
-                    self.spike_SR_channel.setData(self.spike_raster_x ,self.SR_value[0]  ,pen=pg.mkPen({'color': 'w' ,'width':2}))  # ,fillLevel=10, fillBrush=(255,255,255,30)
+                if self.plot_update_enabled:
+                    if(np.isnan(self.spike_raster_data).any() == False):
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            for i in range(16): # diff color diff channels separate_interval
+                                self.spike_raster_data[i][self.spike_raster_data[i] == 0] = -1
+                                self.spike_raster_channel[i].setData(self.spike_raster_x, self.spike_raster_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+                        self.spike_raster_data[self.spike_raster_data == -1] = 0
+                        self.SR_value[0] = my_gaussian_filter1d(np.sum(self.spike_raster_data ,axis=0) ,sigma=10)
+                        self.spike_SR_channel.setData(self.spike_raster_x ,self.SR_value[0]  ,pen=pg.mkPen({'color': 'w' ,'width':2}))  # ,fillLevel=10, fillBrush=(255,255,255,30)
 
                 """ auto update spike threshold """
                 # 循环的自动采样不同channel的raw data 来 时刻更新 spike threhsold
@@ -896,22 +1146,20 @@ class ESBMainWindow(UI.MainWindow):
                 """ spike data mode 2 """ 
                 # # update infinited line
                 self.AP_updating_indicater.setPos(self.ring_spike_mode2_pointer) # span (0, 1)
-                self.AP_updating_indicater.label.setFormat('loss_packets:{}/{} time: {} s'.format(self.spike_moide2_misspackets, self.spike_mode2_accumulpackets, self.spike_timestamp_note // 1000))
+                self.AP_pI_channel.setTitle('AP data 0-15 channels <span style="color: yellow; font-size: 10pt">loss_packets:{}/{} time: {} s</span>'.format(self.spike_moide2_misspackets, self.spike_mode2_accumulpackets, self.spike_timestamp_note // 1000))
                 ## update rssi
                 self.update_rssi(self.mSerial.rssi)
                 ## update loss rate
                 self.update_packet_loss(round(self.spike_moide2_misspackets /(self.spike_moide2_misspackets + self.spike_mode2_accumulpackets + 1), 2) * 100)
 
-                for i in range(16): # diff color diff channels separate_interval
-                    # update data
-                    """ upper and lower band """
-                    if(self.spike_mode2_curr_channel[i] != 0):
-                        self.reinit_rawdata_mode2_temp += 1
-                        self.AP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
-                    else:
-                        # re-init raw data
-                        self.spike_mode2_raw_data[i] = np.full((1 ,self.spike_display_data_num) ,np.nan)
-                        self.AP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))
+                if self.plot_update_enabled:
+                    for i in range(16): # diff color diff channels separate_interval
+                        if(self.spike_mode2_curr_channel[i] != 0):
+                            self.reinit_rawdata_mode2_temp += 1
+                            self.AP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))   
+                        else:
+                            self.spike_mode2_raw_data[i] = np.full((1 ,self.spike_display_data_num) ,np.nan)
+                            self.AP_raw_channel[i].setData(self.spike_mode2_x, self.spike_mode2_raw_data[i] ,pen=pg.mkPen({'color': self.colorList[i] ,'width':1}))
   
 
             """ LSR data update """ 
@@ -919,13 +1167,14 @@ class ESBMainWindow(UI.MainWindow):
             if(self.ring_LSR_pointer >= self.LSR_display_data_num):
                 self.ring_LSR_pointer = 0
             # IMU data
-            for imu_channel in range(3):
-                self.IMU_accl_channel[imu_channel].setData(self.LSR_timestamp ,self.IMUdata[imu_channel] ,name=self.IMUaccle_name[imu_channel] ,
-                                                 pen=pg.mkPen({'color': self.colorList[imu_channel] ,'width':1}),symbol='o')
+            if self.plot_update_enabled:
+                for imu_channel in range(3):
+                    self.IMU_accl_channel[imu_channel].setData(self.LSR_timestamp ,self.IMUdata[imu_channel] ,name=self.IMUaccle_name[imu_channel] ,
+                                                     pen=pg.mkPen({'color': self.colorList[imu_channel] ,'width':1}),symbol='o')
             # battery data
             self.update_battery_indicator(self.RSOC, self.Battery_STAT, self.Battery_voltage)
              
-    def raw_data_generator(self ,port, data):
+    def raw_data_generator(self ,port, data, update_buffers: bool = True):
         """
         update all data array via ring buffer
         @data:
@@ -938,9 +1187,9 @@ class ESBMainWindow(UI.MainWindow):
                 """ LFP raw data figure 1"""
                 lfp_timestamp = np.array(data[1])
                 raw_data = np.array(data[2])
-                ESA_raw_data = np.array(data[5]) * 100 # 放缩 到 lfp 一样的尺度
+                ESA_raw_data = np.array(data[5]) * 10 # 放缩 到 lfp 一样的尺度
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
-                
+
                 # maz interval between packets
                 Interval_packets_max = 0
                 if(self.current_sample_mode == 0):
@@ -956,75 +1205,65 @@ class ESBMainWindow(UI.MainWindow):
                 #     print("LFP data moide3:", Interval_packets_max, loss_packets_value)
                 self.lfpmisspackets +=  loss_packets_value
                 self.lfpaccumulpackets += len(lfp_timestamp)
-                # 每save file 10次就重新统计丢失的包的数量
-                if(self.lfpaccumulpackets >= (self.mSerial.file_size_lfp) * 10):
+                # 每save file 1次就重新统计丢失的包的数量
+                if(self.lfpaccumulpackets >= (self.mSerial.file_size_lfp)):
                     self.lfpaccumulpackets = 0
                     self.lfpmisspackets = 0
 
-                # update figure data
                 endpoint = self.ring_lfp_pointer + len(raw_data[0])
-                # for ESA update pointer
                 ESA_pointer_temp = self.ring_lfp_pointer
-                if(endpoint > self.lfp_display_data_num):
+                if endpoint > self.lfp_display_data_num:
                     temp_onset = endpoint - self.lfp_display_data_num
-                    for channel_num in range(16):
-                        # LFP通道使用偶数位置的Y轴偏移 (channel_num * 2)
-                        temp_vdd = raw_data[channel_num] + (channel_num * 2) * self.separate_interval
-                        self.LFP_raw_data[channel_num][self.ring_lfp_pointer:] = temp_vdd[0:-temp_onset]
-                        self.LFP_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                    if update_buffers:
+                        for channel_num in range(16):
+                            temp_vdd = raw_data[channel_num] + (channel_num * 2) * self.separate_interval
+                            self.LFP_raw_data[channel_num][self.ring_lfp_pointer:] = temp_vdd[0:-temp_onset]
+                            self.LFP_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
                     self.ring_lfp_pointer = temp_onset
                 else:
-                    for channel_num in range(16):
-                        # LFP通道使用偶数位置的Y轴偏移 (channel_num * 2)
-                        self.LFP_raw_data[channel_num][self.ring_lfp_pointer:endpoint] = raw_data[channel_num] + (channel_num * 2) * self.separate_interval
-                    self.ring_lfp_pointer = endpoint # update indicater
+                    if update_buffers:
+                        for channel_num in range(16):
+                            self.LFP_raw_data[channel_num][self.ring_lfp_pointer:endpoint] = raw_data[channel_num] + (channel_num * 2) * self.separate_interval
+                    self.ring_lfp_pointer = endpoint
 
-                # filter 只滤波pointer 之前的所有数据
-                if(not self.lfp_tab.enable_filter_button.isEnabled() and self.ring_lfp_pointer > 0):
-                    for channel_num in range(16):
-                        # LFP通道使用偶数位置的Y轴偏移 (channel_num * 2)
-                        self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] = LFP_filter(self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] - (channel_num * 2) * self.separate_interval, 
-                                                                                             self.lfp_tab.low_cutoff.currentText(), self.lfp_tab.high_cutoff.currentText()) + (channel_num * 2) * self.separate_interval
+                if update_buffers:
+                    if(not self.lfp_tab.enable_filter_button.isEnabled() and self.ring_lfp_pointer > 0):
+                        for channel_num in range(16):
+                            self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] = LFP_filter(self.LFP_raw_data[channel_num][0:self.ring_lfp_pointer] - (channel_num * 2) * self.separate_interval, 
+                                                                                                 self.lfp_tab.low_cutoff.currentText(), self.lfp_tab.high_cutoff.currentText()) + (channel_num * 2) * self.separate_interval
 
-                # ESA数据处理 (与LFP数据处理逻辑相同，但使用不同的Y轴偏移
-                # 更新ESA图表数据 (使用与LFP相同的ring pointer)
-                if(len(ESA_raw_data[0]) != 0):
-                    if(endpoint > self.lfp_display_data_num ):
-                        temp_onset = endpoint - self.lfp_display_data_num
-                        for channel_num in range(16):
-                            # ESA通道使用奇数位置的Y轴偏移 (channel_num * 2 + 1)
-                            temp_vdd = ESA_raw_data[channel_num] + (channel_num * 2 + 1) * self.separate_interval
-                            self.ESA_raw_data[channel_num][ESA_pointer_temp:] = temp_vdd[0:-temp_onset]
-                            self.ESA_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
-                    else:
-                        for channel_num in range(16):
-                            # ESA通道使用奇数位置的Y轴偏移 (channel_num * 2 + 1)
-                            self.ESA_raw_data[channel_num][ESA_pointer_temp:endpoint] = ESA_raw_data[channel_num] + (channel_num * 2 + 1) * self.separate_interval
-                
-                 # update raster data
-                if(len(spike_raster_data_mode_1[0]) != 0):
-                    endpoint = self.ring_spike_raster_pointer + len(spike_raster_data_mode_1[0])
-                    if(endpoint > self.spike_raster_display_data_num ):
-                        temp_onset = endpoint - self.spike_raster_display_data_num
-                        for channel_num in range(16):
-                            temp_vdd = spike_raster_data_mode_1[channel_num] * (channel_num) # separate value
-                            self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:] = temp_vdd[0:-temp_onset]
-                            
-                            self.spike_raster_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
-                        self.ring_spike_raster_pointer = temp_onset
-                    else:
-                        for channel_num in range(16):
-                            self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:endpoint] = spike_raster_data_mode_1[channel_num] * (channel_num)
-                        self.ring_spike_raster_pointer = endpoint # update indicater
+                    if(len(ESA_raw_data[0]) != 0):
+                        endpoint_ESA = ESA_pointer_temp + len(ESA_raw_data[0])
+                        if(endpoint_ESA > self.lfp_display_data_num):
+                            temp_onset = endpoint_ESA - self.lfp_display_data_num
+                            for channel_num in range(16):
+                                temp_vdd = ESA_raw_data[channel_num] + (channel_num * 2 + 1) * self.separate_interval
+                                self.ESA_raw_data[channel_num][ESA_pointer_temp:] = temp_vdd[0:-temp_onset]
+                                self.ESA_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                        else:
+                            for channel_num in range(16):
+                                self.ESA_raw_data[channel_num][ESA_pointer_temp:endpoint_ESA] = ESA_raw_data[channel_num] + (channel_num * 2 + 1) * self.separate_interval
         
+                # Clear buffers after processing
+                # This ensures that even if plot updates are disabled, the data is processed (e.g. for saving)
+                # but doesn't accumulate indefinitely in the source if it was meant to be consumed here.
+                # However, raw_data_generator consumes `data` which is passed as argument.
+                # The caller `update_plot_data` is responsible for clearing the buffers in `SerialPort`?
+                # No, `update_plot_data` receives `data` from the signal. The signal emission in `neural_reader.py` clears the buffer in `SerialPort`.
+                # So memory leak in `SerialPort` buffers is unlikely if signals are emitted.
+                # But what if signals are emitted faster than processed? The queue grows.
+                
+                pass
 
-                """  mode 1  & 3"""
-            elif(int(data[0][0]) == 1):
+            """  mode 1  & 3"""
+            if(int(data[0][0]) == 1):
                 """ spike raw data + raster data mode 1 """
                 self.spike_raw_channel = data[0][1]
                 spike_timestamp_mode_1 = np.array(data[1])
                 spike_raw_data_mode_1 = np.array(data[2])
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
+                alignment_data = np.array(data[5])
+
                 # curr timestamp
                 self.spike_timestamp_note = spike_timestamp_mode_1[0]
                 
@@ -1044,40 +1283,55 @@ class ESBMainWindow(UI.MainWindow):
                 self.spikemisspackets_mode_1 +=  loss_packets_value
                 self.spikeaccumulpackets_mode_1 += len(spike_timestamp_mode_1)
                 # 每save file一次就重新统计丢失的包的数量
-                if(self.spikeaccumulpackets_mode_1 >= self.mSerial.file_size_mode1 * 10):
+                if(self.spikeaccumulpackets_mode_1 >= self.mSerial.file_size_mode1):
                     self.spikeaccumulpackets_mode_1 = 0
                     self.spikemisspackets_mode_1 = 0
                 
-                # update raw data
                 self.single_update_data_size = len(spike_raw_data_mode_1)
+                if update_buffers:
+                    self.spike1ch_rms_pending += self.single_update_data_size
                 endpoint = self.ring_spike_pointer + len(spike_raw_data_mode_1)
-                if(endpoint > self.spike_display_data_num):
+                if endpoint > self.spike_display_data_num:
                     temp_onset = endpoint - self.spike_display_data_num
-                    
-                    self.spike_raw_data[0][self.ring_spike_pointer:] = spike_raw_data_mode_1[0:-temp_onset]
-                    self.spike_raw_data[0][0:temp_onset] = spike_raw_data_mode_1[-temp_onset:]
+                    if update_buffers:
+                        self.spike_raw_data[0][self.ring_spike_pointer:] = spike_raw_data_mode_1[0:-temp_onset]
+                        self.spike_raw_data[0][0:temp_onset] = spike_raw_data_mode_1[-temp_onset:]
+                        
+                        if len(alignment_data) > 0:
+                            self.alignment_buffer[self.ring_spike_pointer:] = alignment_data[0:-temp_onset] * 1000
+                            self.alignment_buffer[0:temp_onset] = alignment_data[-temp_onset:] * 1000
+                            
                     self.ring_spike_pointer = temp_onset
                 else:
-                    self.spike_raw_data[0][self.ring_spike_pointer:endpoint] = spike_raw_data_mode_1
-                    self.ring_spike_pointer = endpoint # update indicater
-                # 如果开启滤波，更新滤波缓冲
-                if self.spike_filter_enabled:
+                    if update_buffers:
+                        self.spike_raw_data[0][self.ring_spike_pointer:endpoint] = spike_raw_data_mode_1
+                        
+                        if len(alignment_data) > 0:
+                            self.alignment_buffer[self.ring_spike_pointer:endpoint] = alignment_data * 1000
+
+                    self.ring_spike_pointer = endpoint
+
+                if update_buffers and self.spike_filter_enabled:
                     self._apply_spike_filter_buffer()
 
-                # update raster data
+                if update_buffers and self.spike1ch_rms_pending >= self.spike_display_data_num:
+                    self.spike1ch_rms_pending = 0
+                    self._update_spike1ch_rms_label()
+
                 endpoint = self.ring_spike_raster_pointer + len(spike_raster_data_mode_1[0])
-                if(endpoint > self.spike_raster_display_data_num):
+                if endpoint > self.spike_raster_display_data_num:
                     temp_onset = endpoint - self.spike_raster_display_data_num
-                    for channel_num in range(16):
-                        temp_vdd = spike_raster_data_mode_1[channel_num] * (channel_num) # separate value
-                        self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:] = temp_vdd[0:-temp_onset]
-                        
-                        self.spike_raster_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                    if update_buffers:
+                        for channel_num in range(16):
+                            temp_vdd = spike_raster_data_mode_1[channel_num] * (channel_num)
+                            self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:] = temp_vdd[0:-temp_onset]
+                            self.spike_raster_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
                     self.ring_spike_raster_pointer = temp_onset
                 else:
-                    for channel_num in range(16):
-                        self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:endpoint] = spike_raster_data_mode_1[channel_num] * (channel_num)
-                    self.ring_spike_raster_pointer = endpoint # update indicater
+                    if update_buffers:
+                        for channel_num in range(16):
+                            self.spike_raster_data[channel_num][self.ring_spike_raster_pointer:endpoint] = spike_raster_data_mode_1[channel_num] * (channel_num)
+                    self.ring_spike_raster_pointer = endpoint
             
                 """  mode 2  """
             elif(int(data[0][0]) == 2):
@@ -1095,65 +1349,77 @@ class ESBMainWindow(UI.MainWindow):
                 self.spike_mode2_accumulpackets += len(spike_timestamp)
 
                 # 每save file一次就重新统计丢失的包的数量
-                if(self.spike_mode2_accumulpackets >= self.mSerial.file_size_mode2 * 10):
+                if(self.spike_mode2_accumulpackets >= self.mSerial.file_size_mode2):
                     self.spike_mode2_accumulpackets = 0
                     self.spike_moide2_misspackets = 0
 
-                # update figure data
                 self.spike_mode2_curr_channel = []
                 for ii in range(16):
                     self.spike_mode2_curr_channel.append(len(spikeraw_data[ii]))
                 
-                endpoint = self.ring_spike_mode2_pointer + max(self.spike_mode2_curr_channel)
-                if(endpoint > self.spike_display_data_num):
+                max_len = max(self.spike_mode2_curr_channel) if self.spike_mode2_curr_channel else 0
+                endpoint = self.ring_spike_mode2_pointer + max_len
+                if endpoint > self.spike_display_data_num:
                     temp_onset = endpoint - self.spike_display_data_num
-                    for channel_num in range(16):
-                        if(self.spike_mode2_curr_channel[channel_num] != 0):
-                            temp_vdd = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
-                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:] = temp_vdd[0:-temp_onset]
-                            self.spike_mode2_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
+                    if update_buffers:
+                        for channel_num in range(16):
+                            if(self.spike_mode2_curr_channel[channel_num] != 0):
+                                temp_vdd = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
+                                self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:] = temp_vdd[0:-temp_onset]
+                                self.spike_mode2_raw_data[channel_num][0:temp_onset] = temp_vdd[-temp_onset:]
                     self.ring_spike_mode2_pointer = temp_onset
                 else:
-                    for channel_num in range(16):
-                        if(self.spike_mode2_curr_channel[channel_num] == max(self.spike_mode2_curr_channel)):
-                            self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:endpoint] = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
-                    self.ring_spike_mode2_pointer = endpoint # update indicater
+                    if update_buffers and max_len > 0:
+                        for channel_num in range(16):
+                            if(self.spike_mode2_curr_channel[channel_num] == max_len):
+                                self.spike_mode2_raw_data[channel_num][self.ring_spike_mode2_pointer:endpoint] = np.array(spikeraw_data[channel_num]) + channel_num * self.separate_interval_spike
+                    self.ring_spike_mode2_pointer = endpoint
                 pass
 
 
             """ sensing data 9 data """
             if(int(data[0][0]) != 2):
-                sensors_data = np.array(data[3], dtype=np.float32)
+                # 传感器数据健壮转换
+                # Try fast path first
+                try:
+                    # If data[3] is already well-formed, this is very fast
+                    sensors_data = np.array(data[3], dtype=np.float32)
+                except Exception:
+                    # Slow path with robust conversion
+                    sensors_data = np.array([[ _safe_float_fast(x) for x in row ] for row in data[3]], dtype=np.float32)
+
                 sensor_end_point = self.ring_LSR_pointer + len(sensors_data[0])
 
-                self.RSOC = int(sensors_data[6][-1])
-                self.Battery_STAT = int(sensors_data[7][-1])
-                self.Battery_voltage = int(sensors_data[8][-1])
+                # NaN 友好处理，避免因异常输入导致崩溃
+                self.RSOC = int(np.nan_to_num(sensors_data[6][-1], nan=0.0))
+                self.Battery_STAT = int(np.nan_to_num(sensors_data[7][-1], nan=0.0))
+                self.Battery_voltage = int(np.nan_to_num(sensors_data[8][-1], nan=0.0))
                 if(sensor_end_point > self.LSR_display_data_num):
                     temp_onset = sensor_end_point - self.LSR_display_data_num
-                    for i in range(6):
-                        self.IMUdata[i][self.ring_LSR_pointer:] = sensors_data[i][0:-temp_onset]
-                        self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
+                    if update_buffers:
+                        for i in range(6):
+                            self.IMUdata[i][self.ring_LSR_pointer:] = sensors_data[i][0:-temp_onset]
+                            self.IMUdata[i][0:temp_onset] = sensors_data[i][-temp_onset:]
 
-                    self.RSOC_stat[0][self.ring_LSR_pointer:] = sensors_data[6][0:-temp_onset]
-                    self.RSOC_stat[0][0:temp_onset] = sensors_data[6][-temp_onset:]
+                        self.RSOC_stat[0][self.ring_LSR_pointer:] = sensors_data[6][0:-temp_onset]
+                        self.RSOC_stat[0][0:temp_onset] = sensors_data[6][-temp_onset:]
 
-                    self.STAT_stat[0][self.ring_LSR_pointer:] = (sensors_data[7][0:-temp_onset])
-                    self.STAT_stat[0][0:temp_onset] = sensors_data[7][-temp_onset:] 
+                        self.STAT_stat[0][self.ring_LSR_pointer:] = (sensors_data[7][0:-temp_onset])
+                        self.STAT_stat[0][0:temp_onset] = sensors_data[7][-temp_onset:] 
 
-                    self.Voltage_stat[0][self.ring_LSR_pointer:] = (sensors_data[8][0:-temp_onset])
-                    self.Voltage_stat[0][0:temp_onset] = sensors_data[8][-temp_onset:] 
-                    
+                        self.Voltage_stat[0][self.ring_LSR_pointer:] = (sensors_data[8][0:-temp_onset])
+                        self.Voltage_stat[0][0:temp_onset] = sensors_data[8][-temp_onset:] 
                     self.ring_LSR_pointer = temp_onset
                 else:
-                    try:
-                        for i in range(6):
-                            self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
-                        self.RSOC_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[6]
-                        self.STAT_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[7]
-                        self.Voltage_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[8]
-                    except:
-                        print(sensors_data[i])
+                    if update_buffers:
+                        try:
+                            for i in range(6):
+                                self.IMUdata[i][self.ring_LSR_pointer:sensor_end_point] = sensors_data[i]
+                            self.RSOC_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[6]
+                            self.STAT_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[7]
+                            self.Voltage_stat[0][self.ring_LSR_pointer:sensor_end_point] = sensors_data[8]
+                        except:
+                            print(sensors_data[i])
                     self.ring_LSR_pointer = sensor_end_point
 
 
@@ -1169,6 +1435,7 @@ class ESBMainWindow(UI.MainWindow):
             self.mSerial.GUIUpdate.connect(self.update_plot_data)
             self.mSerial.EmptyGUIUpdate.connect(self.update_idle_status)
             self.mSerial.CameraGUIUpdate.connect(self.update_carmera_status)
+            self.mSerial.ProgressUpdate.connect(self.update_save_progress)
             self.mSerial.start()
             # RF power control status update
             self.rf_power_status_update()
@@ -1176,9 +1443,26 @@ class ESBMainWindow(UI.MainWindow):
             self.habits_tab.habits_panel.Neural_recorder_command.connect(self.HABITS_command_process)
         except:
             print(sys.exc_info())
-            QMessageBox.warning(self, "Warning", "Some init failed, please check the connection")
+            self.log_message("Warning: Some init failed, please check the connection", level="warning")
             pass
     
+    def update_save_progress(self, mode, percent, run_time):
+        """Update save progress bars and run time"""
+        self.run_time_label.setText(f"Run: {run_time} min")
+        
+        if mode == 0: # LFP
+            if hasattr(self.lfp_tab, 'lfp_progress_bar'):
+                self.lfp_tab.lfp_progress_bar.setValue(int(percent))
+        elif mode == 3: # Mode3
+            if hasattr(self.lfp_tab, 'mode3_progress_bar'):
+                self.lfp_tab.mode3_progress_bar.setValue(int(percent))
+        elif mode == 1: # Mode1
+            if hasattr(self.spike1ch_tab, 'mode1_progress_bar'):
+                self.spike1ch_tab.mode1_progress_bar.setValue(int(percent))
+        elif mode == 2: # Mode2
+            if hasattr(self.spike4ch_tab, 'mode2_progress_bar'):
+                self.spike4ch_tab.mode2_progress_bar.setValue(int(percent))
+
     def update_carmera_status(self):
         # 如果摄像头处于记录状态就保存一次文文件
         if(self.toggle_recording_button.text() == "Stop recording"):
@@ -1192,91 +1476,125 @@ class ESBMainWindow(UI.MainWindow):
             self.toggle_recording()
 
     def rf_power_on(self):
-        """打开RF功率"""
-        if not self.rf_connected:
-            QMessageBox.warning(self, "Warning", "RF控制串口未连接，请先连接串口")
-            return
-        
-        try:
-            # 发送RF功率开启命令
-            command = b'\x01\x05\x00\x00\xFF\x00\x8C\x3A'
-            self.rf_serial_connection.write(command)
-            self.rf_serial_connection.flush()
-            
-            # 读取响应
-            response = self.rf_serial_connection.read(8)
-            if len(response) == 8 and response == command:
-                self.rf_power_status = 2  # 开启状态
-                self.rf_power_status_update()
-                print("RF功率已开启")
-            else:
-                print("RF功率开启失败")
-                
-        except Exception as e:
-            print(f"RF功率控制错误: {str(e)}")
+        self._rf_set_power(True)
         
     def rf_power_off(self):
-        """关闭RF功率"""
-        if not self.rf_connected:
-            QMessageBox.warning(self, "Warning", "RF控制串口未连接，请先连接串口")
-            return
-        
+        self._rf_set_power(False)
+
+    def rf_query_status(self):
+        self._rf_query_status()
+
+    def _rf_get_addr(self):
         try:
-            # 发送RF功率关闭命令
-            command = b'\x01\x05\x00\x00\x00\x00\xCD\xCA'
-            self.rf_serial_connection.write(command)
+            if hasattr(self, 'rf_channel_combo'):
+                return int(self.rf_channel_combo.currentIndex()) + 1
+        except Exception:
+            pass
+        return 1
+
+    def _rf_build_cmd(self, addr, op):
+        start = 0xA0
+        checksum = (start + int(addr) + int(op)) & 0xFF
+        return bytes([start, int(addr) & 0xFF, int(op) & 0xFF, checksum])
+
+    def _rf_send_cmd(self, op):
+        if not getattr(self, 'rf_connected', False):
+            try:
+                self.statusBar().showMessage("RF serial not connected")
+            except Exception:
+                pass
+            return b""
+        if getattr(self, 'rf_serial_connection', None) is None:
+            return b""
+
+        addr = self._rf_get_addr()
+        cmd = self._rf_build_cmd(addr, op)
+        try:
+            try:
+                self.rf_serial_connection.reset_input_buffer()
+            except Exception:
+                pass
+            self.rf_serial_connection.write(cmd)
             self.rf_serial_connection.flush()
-            
-            # 读取响应
-            response = self.rf_serial_connection.read(8)
-            if len(response) == 8 and response == command:
-                self.rf_power_status = 1  # 关闭状态
-                self.rf_power_status_update()
-                print("RF功率已关闭")
-            else:
-                print("RF功率关闭失败")
-                
-        except Exception as e:
-            print(f"RF功率控制错误: {str(e)}")
+            time.sleep(0.08)
+            n = getattr(self.rf_serial_connection, 'in_waiting', 0)
+            if n and n > 0:
+                return self.rf_serial_connection.read(n)
+            return b""
+        except Exception:
+            return b""
+
+    def _rf_parse_status(self, resp):
+        if not resp or len(resp) < 3:
+            return None
+        addr = self._rf_get_addr()
+        for i in range(len(resp) - 3, -1, -1):
+            if resp[i] == 0xA0 and resp[i + 1] == addr:
+                state = resp[i + 2]
+                if state == 0x01:
+                    return 2
+                if state == 0x00:
+                    return 1
+        return None
+
+    def _rf_set_power(self, on):
+        op = 0x03 if on else 0x02
+        resp = self._rf_send_cmd(op)
+        parsed = self._rf_parse_status(resp)
+        if parsed is None:
+            self.rf_power_status = 2 if on else 1
+        else:
+            self.rf_power_status = parsed
+        self.rf_power_status_update()
+
+    def _rf_query_status(self):
+        resp = self._rf_send_cmd(0x05)
+        parsed = self._rf_parse_status(resp)
+        if parsed is None:
+            return
+        self.rf_power_status = parsed
+        self.rf_power_status_update()
 
     def rf_power_status_update(self):
         """更新RF功率状态显示"""
         if hasattr(self, 'rf_power_status'):
             if self.rf_power_status == 2:  # 开启状态
-                self.rf_power_on_button.setStyleSheet(f"background-color: #66BB6A;")
-                self.rf_power_off_button.setStyleSheet(f"background-color: #ffffff;")
+                self.rf_power_on_button.setStyleSheet("background-color: #66BB6A; color: black; border: none; border-radius: 4px; padding: 5px; font-weight: bold;")
+                self.rf_power_off_button.setStyleSheet("background-color: #F44336; color: white; border: none; border-radius: 4px; padding: 5px; font-weight: bold;")
+                if hasattr(self, 'rf_status_indicator'):
+                    self.rf_status_indicator.setText("RF: ON")
+                    self.rf_status_indicator.setStyleSheet("background-color: #66BB6A; color: black; border-radius: 4px; padding: 5px;")
             elif self.rf_power_status == 1:  # 关闭状态
-                self.rf_power_off_button.setStyleSheet(f"background-color: #FF5252;")
-                self.rf_power_on_button.setStyleSheet(f"background-color: #ffffff;")
+                self.rf_power_off_button.setStyleSheet("background-color: #FF5252; color: black; border: none; border-radius: 4px; padding: 5px; font-weight: bold;")
+                self.rf_power_on_button.setStyleSheet("background-color: #2196F3; color: white; border: none; border-radius: 4px; padding: 5px; font-weight: bold;")
+                if hasattr(self, 'rf_status_indicator'):
+                    self.rf_status_indicator.setText("RF: OFF")
+                    self.rf_status_indicator.setStyleSheet("background-color: #FF5252; color: black; border-radius: 4px; padding: 5px;")
+            else:
+                if hasattr(self, 'rf_status_indicator'):
+                    self.rf_status_indicator.setText("RF: --")
+                    self.rf_status_indicator.setStyleSheet("background-color: #E0E0E0; color: black; border-radius: 4px; padding: 5px;")
 
     def rf_power_control(self):
         """
         控制逻辑：判定时间 10分钟一次
         以电池电量为控制变量
-        电池50% 以下，打开电源
-        电池80% 以上， 关闭电源
-        电池电量20% 以下， idle 模式
+        电池70% 以下，打开电源
+        电池90% 以上， 关闭电源
         """    
         # print("Current RSOC", self.RSOC)
-        
-        # 只有在RF串口连接时才进行自动控制
-        if not self.rf_connected:
-            return
+        Pass
+        # # 只有在RF串口连接时才进行自动控制
+        # if not self.rf_connected:
+        #     return
             
-        current_rf_status = getattr(self, 'rf_power_status', 1)  # 默认为关闭状态
+        # current_rf_status = getattr(self, 'rf_power_status', 1)  # 默认为关闭状态
         
-        if(self.RSOC < 50 and current_rf_status == 1): # 电量低且RF关闭时，开启RF
-            self.rf_power_on()
-            if(self.RSOC < 20):
-                self.sample_stop()
-                self.RF_turnoff = True
-        elif(self.RSOC > 80 and current_rf_status == 2): # 电量高且RF开启时，关闭RF
-            self.rf_power_off()
-        
-        if(self.RF_turnoff and self.RSOC > 20):
-            self.sample_start()
-            self.RF_turnoff = False
-        
+        # if(self.RSOC < 70 and current_rf_status == 1): # 电量低且RF关闭时，开启RF
+        #     if(self.mSerial.save_file_lfp_flag):
+        #         self.rf_power_on()
+        # elif(self.RSOC > 90 and current_rf_status == 2): # 电量高且RF开启时，关闭RF
+        #     self.rf_power_off()
         
        
 
@@ -1287,10 +1605,21 @@ class ESBMainWindow(UI.MainWindow):
         self.update_battery_indicator(self.RSOC, self.Battery_STAT, self.Battery_voltage)
     
     def start_save_lfp(self):
+        # Global Save Check
+        if hasattr(self, 'global_save_enable_button') and not self.global_save_enable_button.isChecked():
+            self.log_message("Save Disabled: Global saving is disabled.", level="warning")
+            # QMessageBox.warning(self, "Save Disabled", "Global saving is disabled. Please enable it in the top control bar.")
+            return
+
         # 文件路径检查
         if not hasattr(self.lfp_tab, 'lfp_file_path_label') or self.lfp_tab.lfp_file_path_label.text() == "File path don't selected":
-            QMessageBox.warning(self, "warning", "请先选择LFP保存路径！")
+            self.log_message("Warning: Please select an LFP save path first!", level="warning")
             return
+        # 开始 video 记录并只有当之前没有处于记录状态下才开始， 这里只作为初始的开启camera的记录
+        if(self.toggle_camera_button.text() == "Open camera"):
+            self.toggle_camera()
+        if(self.toggle_recording_button.text() == "Start recording"):
+            self.toggle_recording()
         # 互斥：仅开启LFP保存
         self.mSerial.save_file_lfp_flag = True
         self.mSerial.save_file_mode1_flag = False
@@ -1308,8 +1637,7 @@ class ESBMainWindow(UI.MainWindow):
         self.spike4ch_tab.stop_save_button.setEnabled(False)
         self.lfp_tab.start_save_mode3_button.setEnabled(True)
         self.lfp_tab.stop_save_mode3_button.setEnabled(False)
-        # 开始 video 记录
-        self.update_carmera_status()
+        
 
     def stop_save_lfp(self):
         self.mSerial.save_file_lfp_flag = False
@@ -1319,9 +1647,15 @@ class ESBMainWindow(UI.MainWindow):
         self.lfp_tab.stop_save_button.setEnabled(False)
 
     def start_save_mode1(self):
+        # Global Save Check
+        if hasattr(self, 'global_save_enable_button') and not self.global_save_enable_button.isChecked():
+            self.log_message("Save Disabled: Global saving is disabled.", level="warning")
+            # QMessageBox.warning(self, "Save Disabled", "Global saving is disabled. Please enable it in the top control bar.")
+            return
+
         # 文件路径检查
         if not hasattr(self.spike1ch_tab, 'mode1_file_path_label') or self.spike1ch_tab.mode1_file_path_label.text() == "File path don't selected":
-            QMessageBox.warning(self, "warning", "请先选择Mode1保存路径！")
+            self.log_message("Warning: Please select a Mode1 save path first!", level="warning")
             return
         # 互斥：仅开启Mode1保存
         self.mSerial.save_file_lfp_flag = False
@@ -1348,9 +1682,15 @@ class ESBMainWindow(UI.MainWindow):
 
     
     def start_save_mode2(self):
+        # Global Save Check
+        if hasattr(self, 'global_save_enable_button') and not self.global_save_enable_button.isChecked():
+            self.log_message("Save Disabled: Global saving is disabled.", level="warning")
+            # QMessageBox.warning(self, "Save Disabled", "Global saving is disabled. Please enable it in the top control bar.")
+            return
+
         # 文件路径检查
         if not hasattr(self.spike4ch_tab, 'file_path_label') or self.spike4ch_tab.file_path_label.text() == "file path don't selected":
-            QMessageBox.warning(self, "warning", "请先选择Mode2保存路径！")
+            self.log_message("Warning: Please select a Mode2 save path first!", level="warning")
             return
         # 互斥：仅开启Mode2保存
         self.mSerial.save_file_lfp_flag = False
@@ -1377,10 +1717,20 @@ class ESBMainWindow(UI.MainWindow):
         self.spike4ch_tab.stop_save_button.setEnabled(False)
 
     def start_save_mode3(self):
+        # Global Save Check
+        if hasattr(self, 'global_save_enable_button') and not self.global_save_enable_button.isChecked():
+            self.log_message("Save Disabled: Global saving is disabled.", level="warning")
+            # QMessageBox.warning(self, "Save Disabled", "Global saving is disabled. Please enable it in the top control bar.")
+            return
+
         # 文件路径检查
         if not hasattr(self.lfp_tab, 'mode3_file_path_label') or self.lfp_tab.mode3_file_path_label.text() == "File path don't selected":
-            QMessageBox.warning(self, "warning", "请先选择Mode3保存路径！")
+            self.log_message("Warning: Please select a Mode3 save path first!", level="warning")
             return
+        if(self.toggle_camera_button.text() == "Open camera"):
+            self.toggle_camera()
+        if(self.toggle_recording_button.text() == "Start recording"):
+            self.toggle_recording()
         # 互斥：仅开启Mode3保存
         self.mSerial.save_file_lfp_flag = False
         self.mSerial.save_file_mode1_flag = False
@@ -1398,9 +1748,6 @@ class ESBMainWindow(UI.MainWindow):
         self.spike1ch_tab.start_save_button.setEnabled(True)
         self.spike1ch_tab.stop_save_button.setEnabled(False)
 
-         # 开始 video 记录
-        self.update_carmera_status()
-
     def stop_save_mode3(self):
         self.mSerial.save_file_mode3_flag = False
         # 更新按钮状态
@@ -1413,16 +1760,23 @@ class ESBMainWindow(UI.MainWindow):
             self.open_command = [0x01 ,0x00] 
             self.mSerial.send_data(self.open_command)
             time.sleep(0.1)
+        self.current_recording_mode = self.sampling_mode_combo.currentText()
 
     def sample_stop(self):
         self.close_command = [0x02 ,0x00] # invalid sample mode
         self.mSerial.send_data(self.close_command)
+        self.current_recording_mode = "Idle"
 
     def sample_mode_switch(self, mode=None): # 切换选项卡的时候就会触发 模式的改变
         if(mode == None):
             mode = self.sampling_mode_combo.currentIndex()
         self.err = self.mSerial.send_data([0x00 ,0x03, int(hex(mode) ,16), 0x00])
         self.current_sample_mode = mode
+        
+        # Update current recording mode string if we are recording
+        if hasattr(self, 'current_recording_mode') and self.current_recording_mode != "Idle":
+            self.current_recording_mode = self.sampling_mode_combo.itemText(mode)
+            
         # 根据选择的采样模式跳转到对应选项卡
         if self.current_sample_mode == 0:
             self.tab_widget.setCurrentIndex(0)  # 16通道LFP
@@ -1452,7 +1806,7 @@ class ESBMainWindow(UI.MainWindow):
 
             self.err = self.mSerial.send_data(self.channel_command)
         else:
-            QMessageBox.warning(self, "Warning", "Please set the sample mode to Spike Mode 1!")
+            self.log_message("Warning: Please set the sample mode to Spike Mode 1!", level="warning")
             pass
     
     def spike_channel_switch_mode2(self):
@@ -1472,7 +1826,7 @@ class ESBMainWindow(UI.MainWindow):
             self.Auto_ST_Update_flag = 0
             self.statusBar().showMessage("Note:Auto Spike Threshold begining!")
         else:
-            QMessageBox.warning(self, "Warning", "Please set the sample mode to Spike Mode 1!")
+            self.log_message("Warning: Please set the sample mode to Spike Mode 1!", level="warning")
             pass
 
     def spike_threshold_set(self): #TODO channel 0, 14 spike raster 有问题可能
@@ -1493,7 +1847,7 @@ class ESBMainWindow(UI.MainWindow):
             self.err = self.mSerial.send_data(self.channel_command)
 
         else:
-            QMessageBox.warning(self, "Warning", "Please set the sample mode to Spike Mode 1!")
+            self.log_message("Warning: Please set the sample mode to Spike Mode 1!", level="warning")
             pass
     
     def IMU_mode_setting(self):
@@ -1505,22 +1859,27 @@ class ESBMainWindow(UI.MainWindow):
 
     def HABITS_command_process(self, command):
         # 根据模式来开启和关闭当前trialblock的数据保存
-        if(int(command) == 1): # trial block end 
+        print(command)
+        if(command[0] == 'L'): # trial block end 
+            if not getattr(self, 'rf_connected', False):
+                self.log_message("Warning: RF control serial not connected; cannot turn RF power on", level="warning")
+            else:
+                self.rf_power_on()
             # mode3 file saved
-            self.mSerial.save_file_mode3_flag = False
-            if hasattr(self.lfp_tab, 'mode3_file_path_label'):
-                self.mSerial.mode3_file_addr = self.lfp_tab.mode3_file_path_label.text()
-            self.sample_mode_switch(int(command) - 1)  # 2 -> mode3; 1-> mode0
-            self.mSerial.save_file_lfp_flag = True
-        elif(int(command) == 4): # trial block onset -> file saving
-            # 保存 lfp 数据
-            self.mSerial.save_file_lfp_flag = False
-            # mode3 file save begin
-            self.sample_mode_switch(int(command) - 1)  # 2 -> mode3; 1-> mode0
-            self.mSerial.save_file_mode3_flag = True
-            if hasattr(self.lfp_tab, 'mode3_file_path_label'):
-                self.mSerial.mode3_file_addr = self.lfp_tab.mode3_file_path_label.text()
+            self.start_save_lfp()
+            self.sample_mode_switch(0)  
+        elif(command[0] == 'E'): # trial block onset -> file saving -> LFP
+            if not getattr(self, 'rf_connected', False):
+                self.log_message("Warning: RF control serial not connected; cannot turn RF power off", level="warning")
+            else:
+                self.rf_power_off()
 
+            if(self.RSOC < 10):
+                self.log_message("Warning: Battery RSOC is too low, Mode3 wont open!", level="warning")
+            else:
+                self.start_save_mode3()
+                # mode3 file save begin
+                self.sample_mode_switch(3)  #  ESA -> mode3;  LFP -> mode0
         pass
     # def lfp_filter_on(self):
     #     self.mSerial.GUIUpdateInterval = 100 # TODO 增加更新间隔来增加filter 的窗口
@@ -1533,6 +1892,9 @@ class ESBMainWindow(UI.MainWindow):
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 def main():
     """主函数"""
+    # Setup logging first
+    setup_logging()
+    
     app = QApplication(sys.argv)
 
     # 显示连接对话框
@@ -1547,7 +1909,10 @@ def main():
         # 如果用户取消连接，退出应用
         sys.exit(0)
 
+import multiprocessing
+
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
 
 

@@ -1,0 +1,10 @@
+{
+  "mouse_id": "Mouse_001",
+  "reward_left": 30,
+  "reward_middle": 30,
+  "reward_right": 30,
+  "low_light": 1,
+  "high_light": 255,
+  "protocol": 0,
+  "start_date": "Thu Jan 29 2026"
+}

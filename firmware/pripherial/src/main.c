@@ -682,7 +682,7 @@ void running_time_offset(uint8_t test){
 void running_time_onset(void){
         timerecording = k_cyc_to_us_floor32(k_cycle_get_32());
 }
-// 这个导致延迟难以预测，对后续的时间延迟建模不友好
+
 int dynamic_retransmit(void){
         /* 
         * 动态改变重发次数：(根据发送 （失败)/(失败 + 成功) 的比率)
@@ -704,20 +704,22 @@ int dynamic_retransmit(void){
                 // 获得 发送接收指标： 发送失败率
                 u32_t indicate_commu = (packet_sent_counter[1] * 100) / ((packet_sent_counter[1] + packet_sent_counter[0])); // 百分位
                 // change retransmit count
-                if(indicate_commu < 5){
+                if(indicate_commu < 1){
                         sample_watch_dog = 0;
-                        esb_set_retransmit_count(1); // 2
+                        esb_set_tx_power(ESB_TX_POWER_0DBM); 
+                        // esb_set_retransmit_count(1); // 2
                 }else if(indicate_commu <= 100){
                         sample_watch_dog++;
-                        esb_set_retransmit_count(1); // 3
+                        esb_set_tx_power(ESB_TX_POWER_4DBM); 
+                        // esb_set_retransmit_count(1); // 3
                 }
                 
-                // 确定是否 需要暂停
-                if(sample_watch_dog > 100){ // 100s
-                        esb_set_retransmit_count(1);
-                        sample_switch = false;
-                        sample_watch_dog = 0;
-                }      
+                // // 确定是否 需要暂停
+                // if(sample_watch_dog > 100){ // 100s
+                //         esb_set_retransmit_count(1);
+                //         sample_switch = false;
+                //         sample_watch_dog = 0;
+                // }      
 
                 // 每过 500ms 重新统计 信号记录指标
                 last_statistic_timestamp = packet_timestamp;
@@ -811,7 +813,7 @@ int main(void)
                         if(!mode_switch_flag){ // normal 
                                 while(!esb_is_idle()){};
                                 packet_sent_counter[1] = 0; // clear the esb fail flag
-                                rf_channel = 5; // TODO selected channel: using default : 84
+                                // rf_channel = 5; 
                                 // 保证 在下位机到中继端的时间延迟最小
                                 k_sleep(K_MSEC(1000));
                                 esb_flush_tx();
@@ -828,7 +830,7 @@ int main(void)
                                         if(advise_channel >= sizeof(rf_channel_list)){
                                                 advise_channel = 0;
                                         }
-                                        esb_set_rf_channel(rf_channel_list[advise_channel]);
+                                        // esb_set_rf_channel(rf_channel_list[advise_channel]);
                                         err = timestamp_payload_wrap();
                                         while(!esb_is_idle()){};
                                 }
@@ -836,9 +838,9 @@ int main(void)
                                 if(sampe_mode){
                                         esb_set_retransmit_count(3);  
                                 }else{
-                                        esb_set_retransmit_count(1);  // 2 比较稳定
+                                        esb_set_retransmit_count(2);  // 2 比较稳定
                                 }
-                                esb_set_rf_channel(rf_channel_list[rf_channel]);
+                                esb_set_rf_channel(83);
 
                         }else{ // fast mode switch
                                 mode_switch_flag = false;
@@ -871,6 +873,8 @@ int main(void)
                         // the timestamp is absolutely value from power up for each packages
                         packet_timestamp = k_uptime_get_32(); // ms CONFIG_SYS_CLOCK_TICKS_PER_SEC depend the time resolution
                         timestamp_LTNSRS = packet_timestamp;
+
+                        dynamic_retransmit();
                         
                 /*** 0.1. imu lc data read ***/
                         // 注意： memset 效率不高这个memset 函数

@@ -23,13 +23,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QSpinBox, QDoubleSpinBox, QLineEdit, QTextEdit,
     QComboBox, QListWidget, QDateEdit, QMessageBox, QSizePolicy,
-    QFrame, QSplitter
+    QFrame, QSplitter, QFileDialog
 )
 from PyQt6.QtGui import QFont, QColor, QPalette
 
 
 class SerialWorker(QThread):
-    """串口通信工作线程"""
+    """Serial communication worker thread"""
     data_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     
@@ -41,7 +41,7 @@ class SerialWorker(QThread):
         self.running = False
         
     def run(self):
-        """运行串口监听"""
+        """Run serial listener"""
         try:
             self.serial_connection = serial.Serial(
                 port=self.port,
@@ -60,20 +60,20 @@ class SerialWorker(QThread):
                         continue
                         
         except Exception as e:
-            self.error_occurred.emit(f"串口连接错误: {str(e)}")
+            self.error_occurred.emit(f"Serial connection error: {str(e)}")
             
     def send_data(self, data: str) -> bool:
-        """发送数据"""
+        """Send data"""
         try:
             if self.serial_connection and self.serial_connection.is_open:
                 self.serial_connection.write((data + '\n').encode('utf-8'))
                 return True
         except Exception as e:
-            self.error_occurred.emit(f"发送数据失败: {str(e)}")
+            self.error_occurred.emit(f"Failed to send data: {str(e)}")
         return False
         
     def stop(self):
-        """停止串口通信"""
+        """Stop serial communication"""
         self.running = False
         if self.serial_connection and self.serial_connection.is_open:
             self.serial_connection.close()
@@ -82,7 +82,7 @@ class SerialWorker(QThread):
 
 
 class TrialDataManager:
-    """高效的试验数据管理器"""
+    """Efficient trial data manager"""
     
     def __init__(self, max_memory_trials: int = 100000):
         self.max_memory_trials = max_memory_trials
@@ -97,8 +97,25 @@ class TrialDataManager:
         # 按日期索引的数据，用于快速查找
         self._trials_by_date = defaultdict(list)
         
+        # Mode switches storage
+        self.mode_switches = [] # List of dicts: {'start': datetime, 'end': datetime}
+
+    def add_mode_switch(self, switch_data: Dict[str, datetime]):
+        """Add a mode switch interval"""
+        self.mode_switches.append(switch_data)
+        
+    def get_recent_mode_switches(self, hours: int = 24) -> List[Dict[str, datetime]]:
+        """Get mode switches from the last N hours"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        recent = []
+        for switch in self.mode_switches:
+            # Check if the interval overlaps with the recent period
+            if switch['end'] >= cutoff_time: 
+                recent.append(switch)
+        return recent
+        
     def add_trial(self, trial_data: Dict[str, Any]):
-        """添加试验数据"""
+        """Add trial data"""
         self.trial_data.append(trial_data)
         # 更新日期索引
         date_key = trial_data['timestamp'].date()
@@ -108,7 +125,9 @@ class TrialDataManager:
         if 'trial_num' in trial_data and 'performance' in trial_data:
             self._performance_cache.append({
                 'trial_num': trial_data['trial_num'],
-                'performance': trial_data['performance']
+                'performance': trial_data['performance'],
+                'early_lick': trial_data.get('early_lick_rate', 0),
+                'protocol_perf': trial_data.get('protocol_perf', 0)
             })
         
         # 标记缓存为脏
@@ -119,7 +138,7 @@ class TrialDataManager:
         
 
     def get_daily_trial_count(self, date: datetime.date = None) -> int:
-        """获取指定日期的试验次数（使用缓存）"""
+        """Get trial count for a given date (cached)"""
         if date is None:
             date = datetime.now().date()
             
@@ -134,7 +153,7 @@ class TrialDataManager:
         return count
         
     def get_recent_trials(self, hours: int = 24) -> List[Dict[str, Any]]:
-        """获取最近N小时的试验数据"""
+        """Get trials from the last N hours"""
         cutoff_time = datetime.now() - timedelta(hours=hours)
         # 使用deque的高效遍历
         recent_trials = []
@@ -147,19 +166,21 @@ class TrialDataManager:
         return list(reversed(recent_trials))  # 恢复时间顺序
         
     def get_performance_data(self ) -> tuple:
-        """获取最近N个试验的性能数据"""
+        """Get performance data for recent trials"""
         if len(self._performance_cache) == 0:
-            return [], []
+            return [], [], [], []
             
         # 使用缓存的性能数据
         recent_data = list(self._performance_cache)[-self.max_memory_trials:]
         x_data = [d['trial_num'] for d in recent_data]
-        y_data = [d['performance'] for d in recent_data]
+        y_perf = [d['performance'] for d in recent_data]
+        y_early = [d.get('early_lick', 0) for d in recent_data]
+        y_proto = [d.get('protocol_perf', 0) for d in recent_data]
         
-        return x_data, y_data
+        return x_data, y_perf, y_early, y_proto
         
     def _cleanup_old_indices(self):
-        """清理过期的日期索引"""
+        """Clean up expired date indices"""
         cutoff_date = datetime.now().date() - timedelta(days=30)
         
         # 使用字典推导式一次性重建，比删除更高效
@@ -169,12 +190,12 @@ class TrialDataManager:
                                   if date >= cutoff_date}
             
     def clear_cache(self):
-        """清理所有缓存"""
+        """Clear all caches"""
         self._daily_trial_cache.clear()
         self._cache_dirty = True
         
     def get_memory_usage(self) -> Dict[str, int]:
-        """获取内存使用情况"""
+        """Get memory usage"""
         return {
             'trial_data_count': len(self.trial_data),
             'trials_by_date_keys': len(self._trials_by_date),
@@ -183,7 +204,7 @@ class TrialDataManager:
         }
         
     def cleanup_old_data(self, days_to_keep: int = 30):
-        """清理超过指定天数的数据"""
+        """Remove data older than N days"""
         cutoff_time = datetime.now() - timedelta(days=days_to_keep)
         
         # 清理试验数据
@@ -203,7 +224,7 @@ class TrialDataManager:
         }
         
     def _rebuild_indices(self):
-        """重建所有索引"""
+        """Rebuild indices"""
         self._trials_by_date.clear()
         self._performance_cache.clear()
         self.clear_cache()
@@ -217,11 +238,13 @@ class TrialDataManager:
             if 'trial_num' in trial and 'performance' in trial:
                 self._performance_cache.append({
                     'trial_num': trial['trial_num'],
-                    'performance': trial['performance']
+                    'performance': trial['performance'],
+                    'early_lick': trial.get('early_lick_rate', 0),
+                    'protocol_perf': trial.get('protocol_perf', 0)
                 })
             
     def force_cleanup(self):
-        """强制清理，释放内存"""
+        """Force cleanup to free memory"""
         # 清理过期索引
         self._cleanup_old_indices()
         
@@ -233,19 +256,20 @@ class TrialDataManager:
             self.cleanup_old_data(days_to_keep=7)  # 只保留最近7天
             
     def get_all_trial_data(self) -> List[Dict[str, Any]]:
-        """获取所有试验数据"""
+        """Get all trial data"""
         return list(self.trial_data)
         
 
         
     def clear_data(self):
-        """清空所有数据"""
+        """Clear all data"""
         self.trial_data.clear()
         self._trials_by_date.clear()
+        self.mode_switches.clear()
         self.clear_cache()
         
     def load_from_list(self, trial_list: List[Dict[str, Any]]):
-        """从列表加载数据"""
+        """Load trial data from a list"""
         self.clear_data()
         
         # 重新构建数据和索引
@@ -259,6 +283,7 @@ class TrialDataManager:
 class OptimizedHabitsPanel(QWidget):
     """优化的Habits面板"""
     Neural_recorder_command = pyqtSignal(str)
+    TrialStarted = pyqtSignal() # Signal emitted when trial starts ('C' received)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -266,6 +291,7 @@ class OptimizedHabitsPanel(QWidget):
         
         # 数据存储 - 使用exe所在目录下的Data文件夹
         self.data_folder = get_data_directory("Data")
+        self.selected_data_dir = None
             
         # 串口通信
         self.serial_worker = None
@@ -276,6 +302,9 @@ class OptimizedHabitsPanel(QWidget):
         
         # 使用优化的数据管理器
         self.data_manager = TrialDataManager()
+        
+        # Track active ESA block
+        self.current_esa_start_time = None
         
         # 定时器
         self.update_timer = QTimer()
@@ -366,7 +395,16 @@ class OptimizedHabitsPanel(QWidget):
         # 鼠标ID
         layout.addWidget(QLabel("Mouse ID:"), 0, 0)
         self.mouse_id_edit = QLineEdit("Mouse_001")
-        layout.addWidget(self.mouse_id_edit, 0, 1, 1, 2)
+        self.mouse_id_edit.setReadOnly(True)  # 由目录选择决定
+        self.mouse_id_edit.setStyleSheet("background-color: #f0f0f0; color: #333;")
+        layout.addWidget(self.mouse_id_edit, 0, 1)
+        
+        # 目录选择按钮
+        self.select_dir_btn = QPushButton("📂")
+        self.select_dir_btn.setMaximumWidth(30)
+        self.select_dir_btn.setToolTip("Select Data Directory")
+        self.select_dir_btn.clicked.connect(self.select_data_directory)
+        layout.addWidget(self.select_dir_btn, 0, 2)
         
         # 串口选择
         layout.addWidget(QLabel("Serial Port:"), 1, 0)
@@ -464,7 +502,7 @@ class OptimizedHabitsPanel(QWidget):
         layout.addWidget(self.protocol_btn, 2, 2, 1, 3)
         
         # 读取所有值按钮
-        self.read_all_btn = QPushButton("读取所有值")
+        self.read_all_btn = QPushButton("Read All Values")
         self.read_all_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
@@ -530,6 +568,30 @@ class OptimizedHabitsPanel(QWidget):
         self.trials_day_label.setStyleSheet("font-weight: bold; color: #9C27B0;")
         layout.addWidget(self.trials_day_label, 2, 1)
         
+        # Protocol Trials
+        layout.addWidget(QLabel("Protocol Trials:"), 3, 0)
+        self.protocol_trials_label = QLabel("0")
+        self.protocol_trials_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.protocol_trials_label, 3, 1)
+
+        # Trial Type
+        layout.addWidget(QLabel("Trial Type:"), 4, 0)
+        self.trial_type_label = QLabel("-")
+        self.trial_type_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.trial_type_label, 4, 1)
+
+        # Outcome
+        layout.addWidget(QLabel("Outcome:"), 5, 0)
+        self.outcome_label = QLabel("-")
+        self.outcome_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.outcome_label, 5, 1)
+
+        # Protocol Perf
+        layout.addWidget(QLabel("Protocol Perf:"), 6, 0)
+        self.protocol_perf_label = QLabel("0%")
+        self.protocol_perf_label.setStyleSheet("font-weight: bold; color: green;")
+        layout.addWidget(self.protocol_perf_label, 6, 1)
+        
         return group
         
     def create_error_group(self) -> QGroupBox:
@@ -578,7 +640,7 @@ class OptimizedHabitsPanel(QWidget):
         
         # 上半部分：图表区域
         charts_container = QWidget()
-        charts_main_layout = QHBoxLayout(charts_container)
+        charts_main_layout = QVBoxLayout(charts_container)
         charts_main_layout.setSpacing(10)
         charts_main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -588,6 +650,7 @@ class OptimizedHabitsPanel(QWidget):
         perf_layout.setContentsMargins(5, 5, 5, 5)
         
         self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('#0B0F14')
         self.plot_widget.setLabel('left', 'Performance (%)')
         self.plot_widget.setLabel('bottom', 'Trial Number')
         self.plot_widget.setTitle('Real-time Trial Performance')
@@ -595,15 +658,41 @@ class OptimizedHabitsPanel(QWidget):
         self.plot_widget.setYRange(0, 100)
         
         # 添加性能基准线
-        self.plot_widget.addLine(y=50, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine))
+        self.plot_widget.addLine(y=50, pen=pg.mkPen('#FFB300', width=2, style=Qt.PenStyle.DashLine))
+        self.plot_widget.addLegend()
         
         # 初始化数据曲线
+        # Global Performance (Blue)
         self.performance_curve = self.plot_widget.plot(
             [], [], 
-            pen=pg.mkPen(color='blue', width=2),
+            name='Global Perf',
+            pen=pg.mkPen(color=(0, 229, 255), width=2),
             symbol='o', 
-            symbolBrush='blue', 
-            symbolSize=6
+            symbolBrush=pg.mkBrush(0, 229, 255, 200),
+            symbolPen=pg.mkPen(0, 229, 255, 255),
+            symbolSize=7
+        )
+
+        # Early Lick Rate (Orange)
+        self.early_lick_curve = self.plot_widget.plot(
+            [], [], 
+            name='Early Lick',
+            pen=pg.mkPen(color=(255, 128, 0), width=2),
+            symbol='t', 
+            symbolBrush=pg.mkBrush(255, 128, 0, 200),
+            symbolPen=pg.mkPen(255, 128, 0, 255),
+            symbolSize=7
+        )
+
+        # Protocol Performance (Green)
+        self.protocol_perf_curve = self.plot_widget.plot(
+            [], [], 
+            name='Protocol Perf',
+            pen=pg.mkPen(color=(0, 255, 0), width=2),
+            symbol='s', 
+            symbolBrush=pg.mkBrush(0, 255, 0, 200),
+            symbolPen=pg.mkPen(0, 255, 0, 255),
+            symbolSize=7
         )
         
         perf_layout.addWidget(self.plot_widget)
@@ -614,6 +703,7 @@ class OptimizedHabitsPanel(QWidget):
         trials_24h_layout.setContentsMargins(5, 5, 5, 5)
         
         self.trials_24h_widget = pg.PlotWidget()
+        self.trials_24h_widget.setBackground('#0B0F14')
         self.trials_24h_widget.setLabel('left', 'Trial Type (0=Left, 1=Right)')
         self.trials_24h_widget.setLabel('bottom', 'Hours Ago')
         self.trials_24h_widget.setTitle('Trials in Last 24 Hours')
@@ -626,9 +716,9 @@ class OptimizedHabitsPanel(QWidget):
         
         trials_24h_layout.addWidget(self.trials_24h_widget)
         
-        # 将两个图表添加到水平布局中，使它们并排显示
-        charts_main_layout.addWidget(perf_group)
-        charts_main_layout.addWidget(trials_24h_group)
+        # 将两个图表添加到垂直布局中
+        charts_main_layout.addWidget(perf_group, 1)  # 占用 1 份空间
+        charts_main_layout.addWidget(trials_24h_group, 1)  # 占用 1 份空间
         
         # 下半部分：串口数据显示
         data_group = QGroupBox("Serial Data Log")
@@ -652,8 +742,8 @@ class OptimizedHabitsPanel(QWidget):
         main_splitter.addWidget(data_group)
         
         # 设置分割器比例：图表区域占大部分空间，Serial data log占较小空间
-        main_splitter.setStretchFactor(0, 3)  # 图表区域占3/4
-        main_splitter.setStretchFactor(1, 1)  # Serial data log占1/4
+        main_splitter.setStretchFactor(0, 4)  # 图表区域占4/5 (增加高度)
+        main_splitter.setStretchFactor(1, 1)  # Serial data log占1/5
         
         main_layout.addWidget(main_splitter)
         
@@ -681,6 +771,30 @@ class OptimizedHabitsPanel(QWidget):
         self.save_params_btn.clicked.connect(self.save_parameters)
         self.load_params_btn.clicked.connect(self.load_parameters)
         
+    def select_data_directory(self):
+        """选择数据保存目录"""
+        directory = QFileDialog.getExistingDirectory(self, "Select Data Directory", self.data_folder)
+        if directory:
+            self.set_data_directory(directory)
+
+    def set_data_directory(self, directory):
+        """Set data directory programmatically"""
+        if os.path.exists(directory):
+            self.selected_data_dir = directory
+            # 从目录名提取Mouse ID
+            mouse_id = os.path.basename(directory)
+            if not mouse_id: # 处理根目录情况
+                mouse_id = os.path.basename(os.path.dirname(directory))
+            
+            self.mouse_id_edit.setText(mouse_id)
+            self.add_message(f"Data directory set to: {directory}")
+            self.add_message(f"Mouse ID updated to: {mouse_id}")
+            
+            # 自动加载新目录下的参数
+            self.load_parameters()
+        else:
+            self.add_message(f"Error: Directory does not exist: {directory}")
+
     def refresh_serial_ports(self):
         """刷新串口列表"""
         self.serial_combo.clear()
@@ -763,13 +877,39 @@ class OptimizedHabitsPanel(QWidget):
             
     def handle_serial_data(self, data: str):
         """处理接收到的串口数据"""
+        # Check for Trial Start signal 'C'
+        if data.strip() == 'C':
+            self.TrialStarted.emit()
+            # Log it but maybe don't clutter the display if it's too frequent?
+            # User said it represents trial start, so it's an event.
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.serial_data_display.append(f"[{timestamp}] Trial Start (C)")
+            return
+
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {data}"
-        
         # 用于处理时间对齐事件，用来自动化switch 在mode0 和mode3 之间
         if data.startswith("ModeSwitch:"):
             # self.save_time_align_data()
-            self.Neural_recorder_command.emit(data[11:]) # 2 -> mode3; 1-> mode0
+            cmd = data[11:].strip()
+            
+            # Record ESA blocks (Mode 3 intervals)
+            if cmd == 'ESA': # ESA Start
+                self.current_esa_start_time = datetime.now()
+                # Refresh chart to show the new active block immediately
+                self.plot_24h_trials()
+            elif cmd == 'LFP': # ESA End (Back to LFP)
+                if self.current_esa_start_time:
+                    end_time = datetime.now()
+                    self.data_manager.add_mode_switch({
+                        'start': self.current_esa_start_time,
+                        'end': end_time
+                    })
+                    self.current_esa_start_time = None
+                    # Refresh chart to show the new block
+                    self.plot_24h_trials()
+
+            self.Neural_recorder_command.emit(cmd) # 2 -> mode3; 1-> mode0
         
         # 添加到日志
         self.serial_data_log.append(log_entry)
@@ -796,36 +936,59 @@ class OptimizedHabitsPanel(QWidget):
         try:
             if data.startswith('T'):  # 试验数据
                 parts = data[1:].split(',')
-                if len(parts) >= 6:
-                    trial_num = int(parts[0])
-                    performance = float(parts[5])
-                    
-                    # 更新当前试验编号
-                    self.current_trial_num = trial_num + 1
-                    
-                    # 更新试验信息
-                    self.trial_label.setText(f"{trial_num} - {performance:.1f}%")
-                    
-                    # 保存试验数据
-                    trial_data = {
-                        'timestamp': datetime.now(),
-                        'trial_num': trial_num,
-                        'trial_type': int(parts[1]) if len(parts) > 1 else 0,  # 1=left, 2=right, 3=middle
-                        'protocol': int(parts[2]) if len(parts) > 2 else 0,
-                        'outcome': int(parts[3]) if len(parts) > 3 else 0,  # 0=no response, 1=correct, 2=error
-                        'early_lick': int(parts[4]) if len(parts) > 4 else 0,
-                        'performance': performance
-                    }
-                    self.data_manager.add_trial(trial_data)
-                    
-                    # 更新试验次数/天
-                    current_trials = self.data_manager.get_daily_trial_count()
-                    self.trials_day_label.setText(f"{current_trials}/d")
-                    
-                    # 更新图表
-                    self.update_performance_chart()
-                    # 更新24小时试验图表
-                    self.plot_24h_trials()
+                if len(parts) >= 8:
+                    try:
+                        trial_num = int(parts[0])
+                        trial_type = int(parts[1])
+                        protocol_index = int(parts[2])
+                        outcome = int(parts[3])
+                        early_lick_rate = float(parts[4])
+                        perf_100 = float(parts[5])
+                        protocol_trials = int(parts[6])
+                        protocol_perf = float(parts[7])
+                        
+                        # Update Protocol UI
+                        self.protocol_edit.blockSignals(True)
+                        self.protocol_edit.setValue(protocol_index)
+                        self.protocol_edit.blockSignals(False)
+
+                        # Update Status Labels
+                        self.current_trial_num = trial_num + 1
+                        self.trial_label.setText(f"{trial_num} - {perf_100:.1f}%")
+                        self.protocol_trials_label.setText(str(protocol_trials))
+                        
+                        type_str = "Left" if trial_type == 1 else "Right" if trial_type == 2 else "Middle" if trial_type == 3 else "Unknown"
+                        self.trial_type_label.setText(f"{trial_type} ({type_str})")
+                        
+                        outcome_str = "No Resp" if outcome == 0 else "Correct" if outcome == 1 else "Error" if outcome == 2 else "Early Lick" if outcome == 3 else "Other"
+                        self.outcome_label.setText(f"{outcome} ({outcome_str})")
+                        
+                        self.protocol_perf_label.setText(f"{protocol_perf:.1f}%")
+                        
+                        # 保存试验数据
+                        trial_data = {
+                            'timestamp': datetime.now(),
+                            'trial_num': trial_num,
+                            'trial_type': trial_type,
+                            'protocol': protocol_index,
+                            'outcome': outcome,
+                            'early_lick_rate': early_lick_rate,
+                            'performance': perf_100,
+                            'protocol_trials': protocol_trials,
+                            'protocol_perf': protocol_perf
+                        }
+                        self.data_manager.add_trial(trial_data)
+                        
+                        # 更新试验次数/天
+                        current_trials = self.data_manager.get_daily_trial_count()
+                        self.trials_day_label.setText(f"{current_trials}/d")
+                        
+                        # 更新图表
+                        self.update_performance_chart()
+                        # 更新24小时试验图表
+                        self.plot_24h_trials()
+                    except ValueError as e:
+                        self.add_message(f"Error parsing T data: {e}")
                     
 
             elif data.startswith('A'):  # 读取所有值的返回数据
@@ -873,14 +1036,41 @@ class OptimizedHabitsPanel(QWidget):
     def update_performance_chart(self):
         """更新性能图表"""
         # 使用数据管理器的高效方法获取性能数据
-        x_data, y_data = self.data_manager.get_performance_data()
+        x_data, y_perf, y_early, y_proto = self.data_manager.get_performance_data()
         
-        # 更新曲线
-        self.performance_curve.setData(x_data, y_data)
+        if not x_data:
+            return
+
+        # 处理回环连线问题：检测 trial_num 减小的地方，插入 NaN 断开连线
+        x_plot = []
+        y_perf_plot = []
+        y_early_plot = []
+        y_proto_plot = []
+        
+        for i in range(len(x_data)):
+            if i > 0 and x_data[i] < x_data[i-1]:
+                # 插入断点
+                x_plot.append(x_data[i]) 
+                y_perf_plot.append(np.nan)
+                y_early_plot.append(np.nan)
+                y_proto_plot.append(np.nan)
+            
+            x_plot.append(x_data[i])
+            y_perf_plot.append(y_perf[i])
+            y_early_plot.append(y_early[i])
+            y_proto_plot.append(y_proto[i])
+        
+        # 更新曲线，使用 connect="finite" 来处理 NaN 断点
+        self.performance_curve.setData(x_plot, y_perf_plot, connect="finite")
+        self.early_lick_curve.setData(x_plot, y_early_plot, connect="finite")
+        self.protocol_perf_curve.setData(x_plot, y_proto_plot, connect="finite")
         
         # 自动调整X轴范围
-        if len(x_data) > 0:
-            self.plot_widget.setXRange(max(0, min(x_data) - 5), max(x_data) + 5)
+        if len(x_plot) > 0:
+            # 过滤掉NaN用于计算范围
+            valid_x = [x for x in x_plot if not np.isnan(x)]
+            if valid_x:
+                self.plot_widget.setXRange(max(0, min(valid_x) - 5), max(valid_x) + 5)
             
     def handle_serial_error(self, error: str):
         """处理串口错误"""
@@ -1013,8 +1203,15 @@ class OptimizedHabitsPanel(QWidget):
             if not mouse_id:
                 mouse_id = "Mouse_001"  # 默认值
                 
-            # 创建以mouse ID为名的文件夹
-            mouse_data_folder = get_mouse_data_directory(mouse_id)
+            # 确定保存目录
+            if self.selected_data_dir:
+                mouse_data_folder = self.selected_data_dir
+            else:
+                mouse_data_folder = get_mouse_data_directory(mouse_id)
+            
+            # 确保目录存在
+            if not os.path.exists(mouse_data_folder):
+                os.makedirs(mouse_data_folder)
             
             params = {
                 'mouse_id': mouse_id,
@@ -1035,17 +1232,9 @@ class OptimizedHabitsPanel(QWidget):
             # 保存试验数据到mouse ID文件夹下
             trial_data_file = os.path.join(mouse_data_folder, "trial_data.json")
             
-            # 读取现有的试验数据（如果文件存在）
-            existing_trial_data = []
-            if os.path.exists(trial_data_file):
-                try:
-                    with open(trial_data_file, 'r') as f:
-                        existing_trial_data = json.load(f)
-                except (json.JSONDecodeError, FileNotFoundError):
-                    existing_trial_data = []
-            
-            # 准备新的试验数据
-            new_trial_data = []
+            # 直接保存内存中的所有数据（覆盖模式），作为当前状态的快照
+            # 这样可以避免追加模式导致的重复数据问题，且能完美还原当前内存状态
+            all_trial_data = []
             for trial in self.data_manager.trial_data:
                 trial_dict = {
                     'timestamp': trial['timestamp'].isoformat(),
@@ -1053,26 +1242,38 @@ class OptimizedHabitsPanel(QWidget):
                     'outcome': trial.get('outcome', 0),
                     'response_time': trial.get('response_time', 0)
                 }
-                # 保存可选字段
+                # 保存所有必要字段以还原状态
                 if 'trial_num' in trial:
                     trial_dict['trial_num'] = trial['trial_num']
                 if 'performance' in trial:
                     trial_dict['performance'] = trial['performance']
                 if 'protocol' in trial:
                     trial_dict['protocol'] = trial['protocol']
-                if 'early_lick' in trial:
-                    trial_dict['early_lick'] = trial['early_lick']
+                if 'early_lick_rate' in trial:
+                    trial_dict['early_lick_rate'] = trial['early_lick_rate']
+                if 'protocol_trials' in trial:
+                    trial_dict['protocol_trials'] = trial['protocol_trials']
+                if 'protocol_perf' in trial:
+                    trial_dict['protocol_perf'] = trial['protocol_perf']
                     
-                new_trial_data.append(trial_dict)
+                all_trial_data.append(trial_dict)
             
-            # 合并现有数据和新数据（追加模式）
-            all_trial_data = existing_trial_data + new_trial_data
-            
-            # 保存合并后的数据
+            # 保存数据
             with open(trial_data_file, 'w') as f:
                 json.dump(all_trial_data, f, indent=2)
                 
-            self.add_message("Parameters updated and trial data appended successfully (existing data preserved)")
+            # Save mode switches
+            mode_switch_file = os.path.join(mouse_data_folder, "mode_switch_data.json")
+            switches_to_save = []
+            for switch in self.data_manager.mode_switches:
+                switches_to_save.append({
+                    'start': switch['start'].isoformat(),
+                    'end': switch['end'].isoformat()
+                })
+            with open(mode_switch_file, 'w') as f:
+                json.dump(switches_to_save, f, indent=2)
+                
+            self.add_message("Parameters updated and trial data snapshot saved successfully")
             
         except Exception as e:
             self.add_message(f"Failed to save parameters: {str(e)}")
@@ -1085,18 +1286,23 @@ class OptimizedHabitsPanel(QWidget):
             if not mouse_id:
                 mouse_id = "Mouse_001"  # 默认值
                 
-            mouse_data_folder = get_mouse_data_directory(mouse_id)
+            # 确定加载目录
+            if self.selected_data_dir:
+                mouse_data_folder = self.selected_data_dir
+            else:
+                mouse_data_folder = get_mouse_data_directory(mouse_id)
+                
             params_file = os.path.join(mouse_data_folder, "habits_params.json")
             
             # 如果mouse ID文件夹不存在，尝试从旧的根目录加载
-            if not os.path.exists(params_file):
+            if not os.path.exists(params_file) and not self.selected_data_dir:
                 params_file = os.path.join(self.data_folder, "habits_params.json")
                 
             if os.path.exists(params_file):
                 with open(params_file, 'r') as f:
                     params = json.load(f)
                     
-                self.mouse_id_edit.setText(params.get('mouse_id', 'Mouse_001'))
+                self.mouse_id_edit.setText(params.get('mouse_id', mouse_id))
                 self.reward_left_edit.setValue(params.get('reward_left', 30))
                 self.reward_middle_edit.setValue(params.get('reward_middle', 30))
                 self.reward_right_edit.setValue(params.get('reward_right', 30))
@@ -1111,9 +1317,10 @@ class OptimizedHabitsPanel(QWidget):
                         
                 self.add_message("Parameters loaded successfully")
                 
-                # 更新mouse_id以防从旧文件加载
-                mouse_id = params.get('mouse_id', mouse_id)
-                mouse_data_folder = get_mouse_data_directory(mouse_id)
+                # 如果没有选择目录，更新目录路径
+                if not self.selected_data_dir:
+                    mouse_id = params.get('mouse_id', mouse_id)
+                    mouse_data_folder = get_mouse_data_directory(mouse_id)
             else:
                 self.add_message("No parameter file found")
             
@@ -1121,7 +1328,7 @@ class OptimizedHabitsPanel(QWidget):
             trial_data_file = os.path.join(mouse_data_folder, "trial_data.json")
             
             # 如果mouse ID文件夹中没有数据，尝试从旧的根目录加载
-            if not os.path.exists(trial_data_file):
+            if not os.path.exists(trial_data_file) and not self.selected_data_dir:
                 trial_data_file = os.path.join(self.data_folder, "trial_data.json")
                 
             if os.path.exists(trial_data_file):
@@ -1145,8 +1352,14 @@ class OptimizedHabitsPanel(QWidget):
                         trial_data['performance'] = trial_dict['performance']
                     if 'protocol' in trial_dict:
                         trial_data['protocol'] = trial_dict['protocol']
-                    if 'early_lick' in trial_dict:
-                        trial_data['early_lick'] = trial_dict['early_lick']
+                    if 'early_lick_rate' in trial_dict:
+                        trial_data['early_lick_rate'] = trial_dict['early_lick_rate']
+                    elif 'early_lick' in trial_dict: # 兼容旧格式
+                        trial_data['early_lick_rate'] = trial_dict['early_lick']
+                    if 'protocol_trials' in trial_dict:
+                        trial_data['protocol_trials'] = trial_dict['protocol_trials']
+                    if 'protocol_perf' in trial_dict:
+                        trial_data['protocol_perf'] = trial_dict['protocol_perf']
                         
                     self.data_manager.add_trial(trial_data)
                 
@@ -1155,9 +1368,76 @@ class OptimizedHabitsPanel(QWidget):
                 # 更新图表
                 self.update_performance_chart()
                 self.plot_24h_trials()
+            
+            # Load mode switches
+            mode_switch_file = os.path.join(mouse_data_folder, "mode_switch_data.json")
+            # Fallback check
+            if not os.path.exists(mode_switch_file):
+                 mode_switch_file = os.path.join(self.data_folder, "mode_switch_data.json")
+            
+            if os.path.exists(mode_switch_file):
+                with open(mode_switch_file, 'r') as f:
+                    saved_switches = json.load(f)
+                
+                self.data_manager.mode_switches.clear()
+                for s in saved_switches:
+                    self.data_manager.add_mode_switch({
+                        'start': datetime.fromisoformat(s['start']),
+                        'end': datetime.fromisoformat(s['end'])
+                    })
+                self.add_message(f"Loaded {len(saved_switches)} mode switch records")
+                # Refresh chart again to show blocks
+                self.plot_24h_trials()
+            
+            self._refresh_status_information()
                 
         except Exception as e:
             self.add_message(f"Failed to load parameters: {str(e)}")
+
+    def _refresh_status_information(self):
+        try:
+            start_date = self.start_date_edit.date().toPyDate()
+            current_date = datetime.now().date()
+            days = (current_date - start_date).days
+            self.days_label.setText(f"{days:.1f} d")
+
+            if len(self.data_manager.trial_data) == 0:
+                self.trial_label.setText("0 - 0.0%")
+                self.trials_day_label.setText("0/d")
+                self.current_trial_num = 0
+                self.protocol_trials_label.setText("0")
+                self.trial_type_label.setText("-")
+                self.outcome_label.setText("-")
+                self.protocol_perf_label.setText("0%")
+                return
+
+            last_trial = self.data_manager.trial_data[-1]
+            trial_num = last_trial.get('trial_num', len(self.data_manager.trial_data) - 1)
+            perf = last_trial.get('performance', 0.0)
+            
+            self.trial_label.setText(f"{int(trial_num)} - {float(perf):.1f}%")
+
+            self.current_trial_num = int(trial_num) + 1
+            current_trials = self.data_manager.get_daily_trial_count()
+            self.trials_day_label.setText(f"{current_trials}/d")
+            
+            # 恢复其他标签
+            protocol_trials = last_trial.get('protocol_trials', 0)
+            self.protocol_trials_label.setText(str(protocol_trials))
+            
+            trial_type = last_trial.get('trial_type', 0)
+            type_str = "Left" if trial_type == 1 else "Right" if trial_type == 2 else "Middle" if trial_type == 3 else "Unknown"
+            self.trial_type_label.setText(f"{trial_type} ({type_str})")
+            
+            outcome = last_trial.get('outcome', 0)
+            outcome_str = "No Resp" if outcome == 0 else "Correct" if outcome == 1 else "Error" if outcome == 2 else "Early Lick" if outcome == 3 else "Other"
+            self.outcome_label.setText(f"{outcome} ({outcome_str})")
+            
+            protocol_perf = last_trial.get('protocol_perf', 0.0)
+            self.protocol_perf_label.setText(f"{float(protocol_perf):.1f}%")
+            
+        except Exception:
+            pass
             
     def save_data_to_file(self, data: str):
         """保存原始数据到文件"""
@@ -1165,7 +1445,12 @@ class OptimizedHabitsPanel(QWidget):
             mouse_id = self.mouse_id_edit.text()
             date_str = datetime.now().strftime("%Y%m%d")
             filename = f"{mouse_id}_{date_str}.txt"
-            filepath = os.path.join(self.data_folder, filename)
+            
+            # 确定保存目录
+            if self.selected_data_dir:
+                filepath = os.path.join(self.selected_data_dir, filename)
+            else:
+                filepath = os.path.join(self.data_folder, filename)
             
             with open(filepath, 'a', encoding='utf-8') as f:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1182,8 +1467,11 @@ class OptimizedHabitsPanel(QWidget):
                 self.add_message("Warning: Mouse ID is empty, using 'Unknown' for TimeAlign file")
                 mouse_id = "Unknown"
             
-            # 创建鼠标ID专用文件夹
-            mouse_folder = get_mouse_data_directory(mouse_id)
+            # 确定保存目录
+            if self.selected_data_dir:
+                mouse_folder = self.selected_data_dir
+            else:
+                mouse_folder = get_mouse_data_directory(mouse_id)
             
             # 生成TimeAlign文件名
             date_str = datetime.now().strftime("%Y%m%d")
@@ -1259,7 +1547,7 @@ class OptimizedHabitsPanel(QWidget):
                     y=trial_types[correct_mask],
                     pen=pg.mkPen(None),
                     brush=pg.mkBrush(0, 255, 0, 180),  # 绿色
-                    size=8,
+                    size=12,
                     symbol='o'
                 )
                 self.trials_24h_widget.addItem(scatter_correct)
@@ -1272,10 +1560,23 @@ class OptimizedHabitsPanel(QWidget):
                     y=trial_types[error_mask],
                     pen=pg.mkPen(255, 0, 0, 255),  # 红色
                     brush=pg.mkBrush(None),
-                    size=12,
+                    size=16,
                     symbol='x'
                 )
                 self.trials_24h_widget.addItem(scatter_error)
+            
+            # Early Lick trials (outcome=3) - 紫色菱形 (显眼)
+            early_lick_mask = outcomes == 3
+            if np.any(early_lick_mask):
+                scatter_early_lick = pg.ScatterPlotItem(
+                    x=times[early_lick_mask], 
+                    y=trial_types[early_lick_mask],
+                    pen=pg.mkPen(255, 0, 255, 255),  # 紫色
+                    brush=pg.mkBrush(255, 0, 255, 200),
+                    size=18,
+                    symbol='d'
+                )
+                self.trials_24h_widget.addItem(scatter_early_lick)
             
             # No response trials (outcome=0) - 蓝色圆圈
             no_response_mask = outcomes == 0
@@ -1283,9 +1584,9 @@ class OptimizedHabitsPanel(QWidget):
                 scatter_no_response = pg.ScatterPlotItem(
                     x=times[no_response_mask], 
                     y=trial_types[no_response_mask],
-                    pen=pg.mkPen(0, 0, 255, 255),  # 蓝色
+                    pen=pg.mkPen(255, 255, 255, 255),  # 白色
                     brush=pg.mkBrush(None),
-                    size=8,
+                    size=12,
                     symbol='o'
                 )
                 self.trials_24h_widget.addItem(scatter_no_response)
@@ -1308,11 +1609,44 @@ class OptimizedHabitsPanel(QWidget):
             current_line = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('red', width=2))
             self.trials_24h_widget.addItem(current_line)
             
+            # 绘制 ESA Mode Blocks (ModeSwitch Intervals)
+            # 包括当前正在进行的区间（如果有）
+            active_intervals = self.data_manager.get_recent_mode_switches(24)
+            if self.current_esa_start_time:
+                active_intervals.append({
+                    'start': self.current_esa_start_time,
+                    'end': now
+                })
+            for switch in active_intervals:
+                # Calculate relative time (hours ago)
+                t_end = (now - switch['end']).total_seconds() / 3600
+                t_start = (now - switch['start']).total_seconds() / 3600
+                
+                # Convert to X coordinates (negative values)
+                x_start = -t_start
+                x_end = -t_end
+                
+                # Clip to visible range
+                if x_end < -24: continue
+                if x_start > 0: x_start = 0 
+                # Create a semi-transparent block
+                # Using Cyan/Teal color with higher opacity for better visibility
+                # Add to bottom (z-value) to not obscure dots
+                region = pg.LinearRegionItem(
+                    values=[x_start, x_end], 
+                    brush=pg.mkBrush(0, 150, 136, 100),  # Teal, alpha=100 (increased)
+                    pen=None,
+                    movable=False
+                )
+                region.setZValue(-100) # Put behind scatter plots
+                self.trials_24h_widget.addItem(region)
+
             # 计算性能统计
             total_trials = len(recent_trials)
             correct_trials = np.sum(outcomes == 1)
             error_trials = np.sum(outcomes == 2)
             no_response_trials = np.sum(outcomes == 0)
+            early_lick_trials = np.sum(outcomes == 3)
             
             # 计算性能百分比（排除no response）
             if total_trials - no_response_trials > 0:
@@ -1321,7 +1655,7 @@ class OptimizedHabitsPanel(QWidget):
                 performance = 0
             
             # 设置标题
-            title = f'24h Trials: {total_trials} total (Perf: {performance:.1f}%)'
+            title = f'24h Trials: {total_trials} total (Perf: {performance:.1f}%, EL: {early_lick_trials})'
             self.trials_24h_widget.setTitle(title)
             
         except Exception as e:
@@ -1354,16 +1688,16 @@ class OptimizedHabitsPanel(QWidget):
             trials_after = memory_after['trial_data_count']
             
             if trials_before != trials_after:
-                self.add_message(f"数据清理完成: 试验数据 {trials_before}→{trials_after}")
+                self.add_message(f"Cleanup completed: trials {trials_before}→{trials_after}")
                 
         except Exception as e:
-            self.add_message(f"数据清理失败: {str(e)}")
+            self.add_message(f"Cleanup failed: {str(e)}")
             
     def get_memory_status(self) -> str:
         """获取内存状态信息"""
         memory_info = self.data_manager.get_memory_usage()
-        return (f"内存使用: 试验数据 {memory_info['trial_data_count']}, "
-                f"缓存项 {memory_info['daily_cache_keys']}")
+        return (f"Memory: trials {memory_info['trial_data_count']}, "
+                f"cache keys {memory_info['daily_cache_keys']}")
         
     def closeEvent(self, event):
         """关闭事件处理"""

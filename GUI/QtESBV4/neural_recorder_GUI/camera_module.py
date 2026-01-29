@@ -3,12 +3,14 @@ import time
 import os
 import datetime
 import threading
+import multiprocessing as mp
+import queue
 import numpy as np
 from typing import Dict, Tuple, Optional
 from path_utils import get_recordings_directory
 
 def get_available_cameras():
-    """检测可用的摄像头"""
+    """Detect available cameras"""
     available_cameras = []
     
     # 检测前10个摄像头索引
@@ -31,25 +33,278 @@ def get_available_cameras():
                         'fps': fps if fps > 0 else 30.0
                     }
                     available_cameras.append(camera_info)
-                    print(f"发现摄像头 {i}: {width}x{height}, FPS: {fps}")
+                    print(f"Camera {i} detected: {width}x{height}, FPS: {fps}")
                 
                 cap.release()
             
         except Exception as e:
-            print(f"检测摄像头 {i} 时出错: {e}")
+            print(f"Error detecting camera {i}: {e}")
             continue
     
     return available_cameras
+
+def _camera_capture_worker(cmd_q: "mp.Queue", frame_q: "mp.Queue", status_q: "mp.Queue"):
+    camera = None
+    camera_id = 0
+    is_open = False
+    is_recording = False
+    video_writer = None
+    recording_params = None
+    current_recording_path = None
+    stop_event = threading.Event()
+    frame_lock = threading.Lock()
+    shared = {"frame": None, "last_ok": 0.0}
+
+    def capture_loop():
+        while not stop_event.is_set():
+            if camera is None or (hasattr(camera, "isOpened") and not camera.isOpened()):
+                time.sleep(0.01)
+                continue
+            ret, frm = camera.read()
+            if ret:
+                with frame_lock:
+                    shared["frame"] = frm
+                    shared["last_ok"] = time.perf_counter()
+            else:
+                time.sleep(0.001)
+
+    capture_thread = None
+    pending_record_start = None
+    next_write_ts = None
+    last_preview_ts = 0.0
+
+    def try_put_latest_frame(payload: bytes):
+        try:
+            while True:
+                frame_q.get_nowait()
+        except Exception:
+            pass
+        try:
+            frame_q.put_nowait(payload)
+        except Exception:
+            pass
+
+    def overlay_timestamp(bgr_frame: np.ndarray, ts: float):
+        try:
+            dt = datetime.datetime.fromtimestamp(ts)
+            text = dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            cv2.putText(
+                bgr_frame,
+                text,
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        except Exception:
+            print("error: put text on frame")
+            pass
+
+    def open_writer(save_path: str, fourcc_str: str, fps: float, scale: float, frame_shape):
+        nonlocal video_writer, recording_params, current_recording_path
+        h0, w0 = int(frame_shape[0]), int(frame_shape[1])
+        scale = float(scale) if scale else 1.0
+        w = int(w0 * scale)
+        h = int(h0 * scale)
+        w = w if w % 2 == 0 else w - 1
+        h = h if h % 2 == 0 else h - 1
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+            vw = cv2.VideoWriter(save_path, fourcc, float(fps), (w, h))
+            if not vw.isOpened():
+                vw.release()
+                raise RuntimeError("VideoWriter open failed")
+            video_writer = vw
+            recording_params = {"w": w, "h": h, "scale": scale, "fps": float(fps)}
+            current_recording_path = save_path
+            return True, save_path
+        except Exception:
+            try:
+                fallback_path = os.path.splitext(save_path)[0] + ".avi"
+                fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                vw = cv2.VideoWriter(fallback_path, fourcc, float(fps), (w, h))
+                if not vw.isOpened():
+                    vw.release()
+                    return False, save_path
+                video_writer = vw
+                recording_params = {"w": w, "h": h, "scale": scale, "fps": float(fps)}
+                current_recording_path = fallback_path
+                return True, fallback_path
+            except Exception:
+                return False, save_path
+
+    try:
+        while True:
+            try:
+                cmd = cmd_q.get(timeout=0.02)
+            except queue.Empty:
+                cmd = None
+
+            if cmd:
+                cmd_type = cmd.get("type")
+                if cmd_type == "open":
+                    camera_id = int(cmd.get("camera_id", 0))
+                    try:
+                        backends = [cv2.CAP_ANY, cv2.CAP_DSHOW]
+                        opened = False
+                        for backend in backends:
+                            cap = cv2.VideoCapture(camera_id, backend)
+                            if cap.isOpened():
+                                ret, _ = cap.read()
+                                if ret:
+                                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                                    camera = cap
+                                    opened = True
+                                    break
+                                cap.release()
+                            else:
+                                cap.release()
+                        if not opened:
+                            cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+                            if cap.isOpened():
+                                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+                                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                                ret, _ = cap.read()
+                                if ret:
+                                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                                    camera = cap
+                                    opened = True
+                                else:
+                                    cap.release()
+                            else:
+                                cap.release()
+
+                        if opened:
+                            is_open = True
+                            stop_event.clear()
+                            capture_thread = threading.Thread(target=capture_loop, daemon=True)
+                            capture_thread.start()
+                            status_q.put(("opened", True, f"camera {camera_id} opened"))
+                        else:
+                            status_q.put(("opened", False, f"camera {camera_id} open failed"))
+                    except Exception as e:
+                        status_q.put(("opened", False, str(e)))
+
+                elif cmd_type == "close":
+                    break
+
+                elif cmd_type == "start_recording":
+                    if not is_open:
+                        status_q.put(("recording_started", False, "camera not open", None))
+                    else:
+                        pending_record_start = cmd
+
+                elif cmd_type == "stop_recording":
+                    if is_recording:
+                        is_recording = False
+                        next_write_ts = None
+                        if video_writer is not None:
+                            try:
+                                video_writer.release()
+                            except Exception:
+                                pass
+                        video_writer = None
+                        recording_params = None
+                        status_q.put(("recording_stopped", True, current_recording_path))
+                        current_recording_path = None
+                    else:
+                        status_q.put(("recording_stopped", True, None))
+
+            if not is_open:
+                continue
+
+            now_perf = time.perf_counter()
+
+            with frame_lock:
+                latest = shared["frame"]
+            if latest is None:
+                continue
+
+            if pending_record_start and not is_recording:
+                save_path = pending_record_start.get("save_path")
+                fourcc_str = pending_record_start.get("fourcc", "mp4v")
+                fps = float(pending_record_start.get("fps", 30.0))
+                scale = float(pending_record_start.get("scale", 1.0))
+                ok, actual_path = open_writer(save_path, fourcc_str, fps, scale, latest.shape)
+                if ok:
+                    is_recording = True
+                    next_write_ts = now_perf
+                    status_q.put(("recording_started", True, "ok", actual_path))
+                else:
+                    status_q.put(("recording_started", False, "writer open failed", save_path))
+                pending_record_start = None
+
+            preview_rate = 10.0 if is_recording else 15.0
+            if now_perf - last_preview_ts >= (1.0 / preview_rate):
+                preview = latest.copy()
+                overlay_timestamp(preview, time.time())
+                jpeg_quality = 70 if is_recording else 80
+                ok, buf = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
+                if ok:
+                    try_put_latest_frame(buf.tobytes())
+                last_preview_ts = now_perf
+
+            if is_recording and video_writer is not None and recording_params is not None:
+                fps = float(recording_params.get("fps", 30.0))
+                if fps <= 0:
+                    fps = 30.0
+                if next_write_ts is None:
+                    next_write_ts = now_perf
+                if now_perf >= next_write_ts:
+                    out = latest
+                    if recording_params.get("scale", 1.0) != 1.0:
+                        out = cv2.resize(out, (int(recording_params["w"]), int(recording_params["h"])), interpolation=cv2.INTER_AREA)
+                    else:
+                        if out.shape[1] != int(recording_params["w"]) or out.shape[0] != int(recording_params["h"]):
+                            out = cv2.resize(out, (int(recording_params["w"]), int(recording_params["h"])), interpolation=cv2.INTER_AREA)
+                    out = out.copy()
+                    overlay_timestamp(out, time.time())
+                    try:
+                        video_writer.write(out)
+                    except Exception:
+                        pass
+                    next_write_ts += 1.0 / fps
+                else:
+                    time.sleep(min(0.002, max(0.0, next_write_ts - now_perf)))
+
+    finally:
+        stop_event.set()
+        try:
+            if capture_thread is not None and capture_thread.is_alive():
+                capture_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if video_writer is not None:
+                video_writer.release()
+        except Exception:
+            pass
+        try:
+            if camera is not None:
+                camera.release()
+        except Exception:
+            pass
+        try:
+            status_q.put(("closed", True, None))
+        except Exception:
+            pass
 
 class CameraModule:
     def __init__(self):
         self.camera = None
         self.is_camera_open = False
         self.is_recording = False
-        self.recording_thread = None
-        self.video_writer = None
         self.frame = None
-        self.frame_processed = False  # 添加帧处理标记
+        self.frame_processed = False
+        self._process = None
+        self._cmd_q = None
+        self._frame_q = None
+        self._status_q = None
+        self._consumer_stop = threading.Event()
+        self._consumer_thread = None
+        self._mp_ctx = mp.get_context("spawn")
         
         # 视频压缩配置
         self.compression_config = {
@@ -97,25 +352,25 @@ class CameraModule:
         self.lock = threading.Lock()
     
     def set_compression_config(self, **kwargs):
-        """设置视频压缩配置
+        """Set video compression config
         
         Args:
-            codec (str): 编码器类型 ('h264', 'h265', 'xvid')
-            quality (str): 质量等级 ('low', 'medium', 'high', 'lossless')
-            resolution_scale (float): 分辨率缩放因子 (0.1-1.0)
-            fps_limit (int): 帧率限制
-            crf (int): 恒定质量因子 (仅H.264/H.265)
-            preset (str): 编码预设 (仅H.264/H.265)
+            codec (str): Codec type ('h264', 'h265', 'xvid')
+            quality (str): Quality level ('low', 'medium', 'high', 'lossless')
+            resolution_scale (float): Resolution scale factor (0.1-1.0)
+            fps_limit (int): FPS limit
+            crf (int): Constant Rate Factor (H.264/H.265 only)
+            preset (str): Encoder preset (H.264/H.265 only)
         """
         for key, value in kwargs.items():
             if key in self.compression_config:
                 self.compression_config[key] = value
-                print(f"压缩配置已更新: {key} = {value}")
+                print(f"Compression config updated: {key} = {value}")
             else:
-                print(f"未知的压缩配置参数: {key}")
+                print(f"Unknown compression config key: {key}")
     
     def get_compression_info(self) -> Dict:
-        """获取当前压缩配置信息"""
+        """Get current compression config info"""
         codec = self.compression_config['codec']
         quality = self.compression_config['quality']
         
@@ -134,12 +389,12 @@ class CameraModule:
         return info
     
     def _get_optimal_codec_settings(self) -> Tuple[str, Dict]:
-        """根据当前配置获取最优的编码器设置"""
+        """Get optimal encoder settings for current config"""
         codec = self.compression_config['codec']
         quality = self.compression_config['quality']
         
         if codec not in self.codec_configs:
-            print(f"不支持的编码器: {codec}，回退到XVID")
+            print(f"Unsupported codec: {codec}; falling back to XVID")
             codec = 'xvid'
         
         codec_config = self.codec_configs[codec]
@@ -152,288 +407,186 @@ class CameraModule:
         return fourcc_str, quality_settings
         
     def open_camera(self, camera_id=0):
-        """打开摄像头"""
-        if not self.is_camera_open:
+        """Open camera"""
+        if self.is_camera_open:
+            return True
+        try:
+            self._cmd_q = self._mp_ctx.Queue()
+            self._frame_q = self._mp_ctx.Queue(maxsize=2)
+            self._status_q = self._mp_ctx.Queue()
+            self._process = self._mp_ctx.Process(
+                target=_camera_capture_worker,
+                args=(self._cmd_q, self._frame_q, self._status_q),
+                daemon=True,
+            )
+            self._process.start()
+            self._cmd_q.put({"type": "open", "camera_id": int(camera_id)})
+            ok = False
+            msg = ""
             try:
-                # 尝试不同的后端
-                backends = [cv2.CAP_ANY, cv2.CAP_DSHOW]
-                
-                for backend in backends:
-                    print(f"尝试使用后端 {backend} 打开摄像头...")
-                    self.camera = cv2.VideoCapture(camera_id, backend)
-                    
-                    # 检查摄像头是否成功打开
-                    if self.camera.isOpened():
-                        # 尝试读取一帧，确认摄像头工作正常
-                        ret, test_frame = self.camera.read()
-                        if ret:
-                            print(f"成功使用后端 {backend} 打开摄像头")
-                            
-                            # 设置分辨率为480p (640x480)
-                            print("(width, height)" ,self.camera.get(cv2.CAP_PROP_FRAME_WIDTH), self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            # self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                            # self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                            
-                            # 设置缓冲区大小为1，减少延迟
-                            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                            
-                            self.is_camera_open = True
-                            return True
-                        else:
-                            print(f"使用后端 {backend} 打开摄像头成功，但无法读取帧")
-                            self.camera.release()
-                    else:
-                        print(f"使用后端 {backend} 无法打开摄像头")
-                
-                # 如果所有后端都失败，尝试降低分辨率
-                print("尝试使用较低分辨率打开摄像头...")
-                self.camera = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-                if self.camera.isOpened():
-                    # 设置较低的分辨率
-                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-                    
-                    # 测试是否可以读取帧
-                    ret, test_frame = self.camera.read()
-                    if ret:
-                        print("成功使用较低分辨率打开摄像头")
-                        self.is_camera_open = True
-                        return True
-                
-                print("无法打开摄像头，请检查摄像头连接或驱动程序")
+                evt, success, msg = self._status_q.get(timeout=3.0)
+                ok = bool(success) if evt == "opened" else False
+            except Exception:
+                ok = False
+
+            if not ok:
+                self.close_camera()
                 return False
-                
-            except Exception as e:
-                print(f"打开摄像头时出错: {e}")
-                return False
-        return True
+
+            self.is_camera_open = True
+            self._consumer_stop.clear()
+            self._consumer_thread = threading.Thread(target=self._consume_frames, daemon=True)
+            self._consumer_thread.start()
+            return True
+        except Exception:
+            self.close_camera()
+            return False
         
     def close_camera(self):
-        """关闭摄像头"""
-        if self.is_camera_open:
-            if self.is_recording:
+        """Close camera"""
+        if self.is_recording:
+            try:
                 self.stop_recording()
-                
-            if self.camera:
-                self.camera.release()
-                
-            self.is_camera_open = False
+            except Exception:
+                pass
+
+        self._consumer_stop.set()
+        try:
+            if self._consumer_thread is not None and self._consumer_thread.is_alive():
+                self._consumer_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        self._consumer_thread = None
+
+        if self._cmd_q is not None:
+            try:
+                self._cmd_q.put({"type": "close"})
+            except Exception:
+                pass
+
+        if self._process is not None:
+            try:
+                self._process.join(timeout=2.0)
+            except Exception:
+                pass
+            try:
+                if self._process.is_alive():
+                    self._process.terminate()
+            except Exception:
+                pass
+        self._process = None
+        self._cmd_q = None
+        self._frame_q = None
+        self._status_q = None
+        self.is_camera_open = False
+        with self.lock:
             self.frame = None
+            self.frame_processed = False
     
     def get_frame(self):
-        """获取当前帧并添加时间戳"""
+        """Get latest frame"""
         if not self.is_camera_open:
             return None
-        
-        # 尝试多次读取帧，以应对偶尔的读取失败
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            ret, frame = self.camera.read()
-            if ret:
-                break
-            print(f"读取帧失败，尝试 {attempt+1}/{max_attempts}")
-            time.sleep(0.01)  # 减少等待时间，提高响应速度
-        
-        if not ret:
-            print("多次尝试读取帧均失败，请检查摄像头连接")
-            return None
-            
-        # 添加时间戳 - 确保每次都获取最新时间
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # 增加毫秒显示
-        cv2.putText(
-            frame, 
-            current_time, 
-            (10, 30), 
-            cv2.FONT_HERSHEY_SIMPLEX, 
-            0.8, 
-            (255, 255, 255), 
-            2, 
-            cv2.LINE_AA
-        )
-        
         with self.lock:
-            self.frame = frame.copy()
-            self.frame_processed = False  # 新帧未处理
-            
-        return frame
+            if self.frame is None:
+                return None
+            return self.frame.copy()
+
+    def _consume_frames(self):
+        while not self._consumer_stop.is_set():
+            if self._frame_q is None:
+                time.sleep(0.05)
+                continue
+            try:
+                payload = self._frame_q.get(timeout=0.2)
+            except Exception:
+                continue
+            try:
+                arr = np.frombuffer(payload, dtype=np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+                with self.lock:
+                    self.frame = img
+                    self.frame_processed = False
+            except Exception:
+                continue
     
     def start_recording(self, save_path=None):
-        """开始录制视频"""
+        """Start recording"""
         if not self.is_camera_open or self.is_recording:
             return False
-        
+        if self._cmd_q is None or self._status_q is None:
+            return False
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # 获取编码器设置
-        fourcc_str, quality_settings = self._get_optimal_codec_settings()
+        fourcc_str, _ = self._get_optimal_codec_settings()
         codec = self.compression_config['codec']
         extension = self.codec_configs[codec]['extension']
-        
+
         if save_path is None:
-            # 创建保存目录 - 使用exe所在目录下的recordings文件夹
             save_dir = get_recordings_directory()
-            
-            # 生成文件名，使用正确的扩展名
             save_path = os.path.join(save_dir, f"video_{timestamp}{extension}")
         else:
-            # 移除原扩展名并添加新的扩展名
             base_path = os.path.splitext(save_path)[0]
             save_path = f"{base_path}_{timestamp}{extension}"
-        
-        # 获取摄像头原始参数
-        original_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        original_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        original_fps = self.camera.get(cv2.CAP_PROP_FPS)
-        
-        # 应用分辨率缩放
-        scale = self.compression_config['resolution_scale']
-        width = int(original_width * scale)
-        height = int(original_height * scale)
-        
-        # 确保分辨率为偶数（某些编码器要求）
-        width = width if width % 2 == 0 else width - 1
-        height = height if height % 2 == 0 else height - 1
-        
-        # 应用帧率限制
-        # 强制使用30fps进行录制
-        self.compression_config['fps_limit'] = 30
-        fps = 30
-        if fps <= 0 or fps > 100:
-            fps = 30  # 默认帧率
-        
-        print(f"录制配置: 编码器={codec}, 质量={self.compression_config['quality']}")
-        print(f"分辨率: {original_width}x{original_height} -> {width}x{height}")
-        print(f"帧率: {original_fps} -> {fps}")
-        print(f"保存路径: {save_path}")
-        
-        # 创建视频写入器
+
+        fps_limit = self.compression_config.get('fps_limit', None)
+        fps = float(fps_limit) if fps_limit else 30.0
+        if fps <= 0:
+            fps = 30.0
+        scale = float(self.compression_config.get('resolution_scale', 1.0) or 1.0)
+
         try:
-            fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
-            self.video_writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
-            
-            if not self.video_writer.isOpened():
-                print(f"无法创建视频写入器，尝试使用备用编码器")
-                # 回退到XVID编码器
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                save_path = os.path.splitext(save_path)[0] + '.avi'
-                self.video_writer = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
-                
-            if not self.video_writer.isOpened():
-                print("无法创建视频写入器")
-                return False
-                
-        except Exception as e:
-            print(f"创建视频写入器时出错: {e}")
-            return False
-        
-        # 存储录制参数供录制线程使用
-        self.recording_params = {
-            'target_width': width,
-            'target_height': height,
-            'original_width': original_width,
-            'original_height': original_height,
-            'scale': scale,
-            'fps': fps
-        }
-        
-        # 保存录制文件路径，用于后续统计
-        self.current_recording_path = save_path
-        
-        self.is_recording = True
-        
-        # 启动录制线程
-        self.recording_thread = threading.Thread(target=self._record_video)
-        self.recording_thread.daemon = True
-        self.recording_thread.start()
-        
-        return True
-    
-    def _record_video(self):
-        """录制视频的线程函数"""
-        # 使用录制目标帧率计算休眠时间
-        target_fps = 30
-        if hasattr(self, 'recording_params'):
-            target_fps = float(self.recording_params.get('fps', 30))
-        sleep_time = 0.01
-        print(f"录制线程休眠时间: {sleep_time:.6f}秒")
-        while self.is_recording and self.is_camera_open:
-            # 独立读取摄像头帧，避免依赖GUI显示逻辑
-            ret, frame = self.camera.read()
-            if not ret:
-                time.sleep(sleep_time)
-                continue
-
-            # 更新最新帧以供GUI显示使用
-            with self.lock:
-                self.frame = frame.copy()
-                self.frame_processed = False
-
-            # 如果需要缩放分辨率
-            frame_to_write = frame
-            if hasattr(self, 'recording_params') and self.recording_params['scale'] != 1.0:
-                target_width = self.recording_params['target_width']
-                target_height = self.recording_params['target_height']
-                frame_to_write = cv2.resize(frame_to_write, (target_width, target_height), interpolation=cv2.INTER_AREA)
-
-            # 在左上角叠加时间戳文本（毫秒）
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            cv2.putText(
-                frame_to_write,
-                current_time,
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA
-            )
-
-            self.video_writer.write(frame_to_write)
-            self.frame_processed = True
-
-            time.sleep(sleep_time)
-    
-    def stop_recording(self):
-        """停止录制视频"""
-        if self.is_recording:
-            self.is_recording = False
-            
-            # 保存当前录制的文件路径
-            current_file_path = None
-            if hasattr(self, 'current_recording_path'):
-                current_file_path = self.current_recording_path
-            
-            # 等待录制线程结束
-            if self.recording_thread and self.recording_thread.is_alive():
-                self.recording_thread.join(timeout=5.0)
-            
-            # 释放视频写入器
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
-            
-            # 显示压缩统计信息
-            if current_file_path and os.path.exists(current_file_path):
-                print(f"\n录制完成: {os.path.basename(current_file_path)}")
-                stats = self._get_quick_stats(current_file_path)
-                if stats:
-                    print(f"文件大小: {stats['file_size_mb']:.2f} MB")
-                    print(f"录制时长: {stats['duration_seconds']:.1f} 秒")
-                    print(f"分辨率: {stats['resolution']}")
-                    print(f"帧率: {stats['fps']:.1f} fps")
-                    print(f"码率: {stats['bitrate_kbps']:.1f} kbps")
-            
-            # 清理录制参数
-            if hasattr(self, 'recording_params'):
-                delattr(self, 'recording_params')
-            if hasattr(self, 'current_recording_path'):
-                delattr(self, 'current_recording_path')
-            
-            return True
+            self._cmd_q.put({
+                "type": "start_recording",
+                "save_path": save_path,
+                "fourcc": fourcc_str,
+                "fps": fps,
+                "scale": scale,
+            })
+            evt, ok, _, actual_path = self._status_q.get(timeout=5.0)
+            if evt == "recording_started" and ok:
+                self.is_recording = True
+                self.current_recording_path = actual_path
+                return True
+        except Exception:
+            pass
         return False
     
+    def stop_recording(self):
+        """Stop recording"""
+        if not self.is_recording:
+            return False
+        if self._cmd_q is None or self._status_q is None:
+            self.is_recording = False
+            return True
+
+        current_file_path = getattr(self, "current_recording_path", None)
+        try:
+            self._cmd_q.put({"type": "stop_recording"})
+            try:
+                self._status_q.get(timeout=5.0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        self.is_recording = False
+
+        if current_file_path and os.path.exists(current_file_path):
+            stats = self._get_quick_stats(current_file_path)
+            if stats:
+                print(f"\nRecording finished: {os.path.basename(current_file_path)}")
+                print(f"File size: {stats['file_size_mb']:.2f} MB")
+                print(f"Duration: {stats['duration_seconds']:.1f} s")
+                print(f"Resolution: {stats['resolution']}")
+                print(f"FPS: {stats['fps']:.1f} fps")
+                print(f"Bitrate: {stats['bitrate_kbps']:.1f} kbps")
+        return True
+    
     def _get_quick_stats(self, file_path: str) -> Dict:
-        """获取视频文件的基本统计信息（内部使用）"""
+        """Get basic video stats (internal use)"""
         if not os.path.exists(file_path):
             return {}
         
@@ -461,24 +614,24 @@ class CameraModule:
                 'bitrate_kbps': (file_size * 8) / (duration * 1000) if duration > 0 else 0
             }
         except Exception as e:
-            print(f"获取视频统计信息时出错: {e}")
+            print(f"Error getting video stats: {e}")
             return {}
     
     def get_compression_stats(self, file_path: str = None) -> Dict:
-        """获取视频文件的详细压缩统计信息
+        """Get detailed compression stats for a video file
         
         Args:
-            file_path: 视频文件路径，如果为None则使用最近录制的文件
+            file_path: Video file path; uses latest recording if None
         """
         if file_path is None:
             if hasattr(self, 'current_recording_path'):
                 file_path = self.current_recording_path
             else:
-                return {'error': '没有可用的录制文件'}
+                return {'error': 'No recording files available'}
         
         stats = self._get_quick_stats(file_path)
         if not stats:
-            return {'error': '无法获取文件统计信息'}
+            return {'error': 'Unable to get file stats'}
         
         # 添加详细的压缩信息
         try:

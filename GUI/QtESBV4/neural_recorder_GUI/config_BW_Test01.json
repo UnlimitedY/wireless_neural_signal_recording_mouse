@@ -1,0 +1,10 @@
+{
+    "lfp_save_path": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\Neural\\Mode0\\BWTest01",
+    "mode3_save_path": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\Neural\\Mode3\\BWTest01",
+    "mode1_save_path": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\Neural\\Mode1\\BWTest01",
+    "mode2_save_path": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\Neural\\Mode2\\BWTest01",
+    "video_save_path": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\Videos/BWTest01",
+    "mice_id_directory": "E:\\wirelessNeuralRecording-mouse\\FormalData\\ExperimentData\\Test\\HABITS\\GUIBWTest01",
+    "rf_serial_port": "COM24",
+    "habits_serial_port": "COM6"
+}

@@ -43,7 +43,7 @@ int esb_initialize(void)
 	 * different addresses should be used for each set of devices.
 	 */
     // pipe 0 的base addr， 注意不能使用0x55和0xAA，这两个是preamble（1 byte）所使用的的地址 4bytes
-	uint8_t base_addr_0[4] = {0xE7, 0xE7, 0xE7, 0xE7};
+	uint8_t base_addr_0[4] = {0x49,0x49,0x49,0x49};
     // pipe 1-7 的base addr 4 bytes
 	uint8_t base_addr_1[4] = {0xC2, 0xC2, 0xC2, 0xC2};
     // 8个pipes 所使用的的唯一的prefix 1 byte 的地址
@@ -92,9 +92,9 @@ int esb_initialize(void)
 
     // 这个会影响传输重发率和通信距离；在极限的设置下，目前custom board的esb通信距离在20cm左右；而且不能有障碍物；
 	esb_set_tx_power(ESB_TX_POWER_0DBM); 
-    // esb_set_tx_power(ESB_TX_POWER_NEG4DBM); 
+    // esb_set_tx_power(ESB_TX_POWER_4DBM); 
 
-    esb_set_rf_channel(84); 
+    esb_set_rf_channel(83); 
 	return 0;
 }
 

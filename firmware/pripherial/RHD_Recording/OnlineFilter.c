@@ -93,7 +93,7 @@ void convert_rhd2132_samples(u16_t* adc_data, float_t* float_data, uint32_t num_
         }
         // 处理剩余样本
         for (; i < num_samples; i++) {
-            float_data[i]   = ((float)(float_data[i])   * scale_factor - RHD2132_ADC_REF_VOLTAGE) * filter_scale;
+            float_data[i]   = ((float)(adc_data[i])   * scale_factor - RHD2132_ADC_REF_VOLTAGE) * filter_scale;
         }
     }else{
         for (; i < unroll_count; i += 4) {
@@ -123,7 +123,7 @@ arm_status calculate_butterworth_coeffs_LFP(FilterConfig *config) {
     }
     config->num_stages = config->order / 2;
     
-    // 2nd order Butterworth lowpass filter coefficients for 250Hz @ 12.5kHz sampling rate
+    // 2nd order Butterworth lowpass filter coefficients for 250Hz @ 12.5kHz sampling rate  Group delay Max 1ms
     // Calculated using bilinear transform
     config->coeffs[0] = 1.0f;     // b0
 	config->coeffs[1] = 2.0f;     // b1
@@ -147,15 +147,15 @@ arm_status calculate_butterworth_coeffs_ESA(FilterConfig *config) {
     
     config->num_stages = 1; // 1st order filter
     
-    // 1st order Butterworth lowpass filter coefficients for 12Hz @ 12.5kHz sampling rate
+    // 1st order Butterworth lowpass filter coefficients for 150Hz @ 12.5kHz sampling rate ； Group delay Max 1ms
     // Calculated using bilinear transform: H(z) = (b0 + b1*z^-1) / (1 + a1*z^-1)
     config->coeffs[0] = 1.0f;     // b0
 	config->coeffs[1] = 1.0f;     // b1
 	config->coeffs[2] = 0.0f;                   // b2 (not used for 1st order)
-	config->coeffs[3] = 0.993986260881674854594791668205289170146f;    // a1
+	config->coeffs[3] = 0.927307768331003257067379763611825183034f;    // a1
 	config->coeffs[4] = 0.0f;                   // a2 (not used for 1st order)
 
-    config->gain = 0.003006869559162580508859807792987339781f; 
+    config->gain = 0.036346115834498420038567445544686052017f; 
     return ARM_MATH_SUCCESS;
 }
 
@@ -424,7 +424,7 @@ uint32_t process_neural_signals_mode3(const float32_t *input_data, uint32_t samp
             rectified_buffer_ESA[ch * samples_per_channel + i] = fabsf(highpass_buffer_ESA[ch * samples_per_channel + i]);
         }
         
-        // ESA lowpass filtering: 1st order IIR lowpass 12Hz
+        // ESA lowpass filtering: 1st order IIR lowpass 150Hz
         arm_biquad_cascade_df2T_f32(
             &state->lowpass_forward_ESA,
             &rectified_buffer_ESA[ch * samples_per_channel],
