@@ -53,6 +53,10 @@ u16_t m_rx_buf[2][LFP_RX_BUFFER_SIZE];
 
 u16_t channel_array_t[SAMPLE_POINT_NUM * time_window];
 u16_t channel_array[Channel_recorded][SAMPLE_POINT_NUM * time_window];
+#define MODE0_DECIMATED_SAMPLES_PER_CHANNEL ((SAMPLE_POINT_NUM * TARGET_FS) / ORIGINAL_FS)
+float32_t mode_0_input_buffer[Channel_recorded * SAMPLE_POINT_NUM * time_window];
+float32_t mode_0_decimated_buffer[Channel_recorded * MODE0_DECIMATED_SAMPLES_PER_CHANNEL];
+u16_t mode_0_array_lfp_t[Channel_recorded * MODE0_DECIMATED_SAMPLES_PER_CHANNEL];
 
 /***********************mode3********************* */
 u16_t mode_3_m_tx_buf[MODE_3_TX_BUFFER_SIZE]; // ppi convert command; /**< TX buffer. */
@@ -124,6 +128,7 @@ const nrfx_timer_t SPI_timer_RESET = NRFX_TIMER_INSTANCE(3);
 
 /********************************Sample rate**********************************/
 bool mode_switch_flag = false; 
+u8_t mode3_esa_reref_enable = MODE3_ESA_REREF_FAST_MEDIAN; // default using switch network
 
 u16_t sampe_mode = 0; // default mode0
 uint32_t timer_period = 50; // default value 
@@ -405,10 +410,10 @@ u16_t init_everything(void){
 
 u16_t init_RHD(){
         rhdspi_init();
-        if(sampe_mode == 0){// 1.25Khz 16 channels: xx ms per packets keep the same ESB rate with mode3
+        if(sampe_mode == 0){// 1Khz 16 channels
                 // timer_period: 1000 / sample rate (KHz) / Channel_num 
                 // esb_set_tx_power(ESB_TX_POWER_0DBM); 
-                timer_period = 50; // 1000 / 1.25 / Channel_recorded
+                timer_period = 5;
                 reset_ticks_value = SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_lfp);
                 
@@ -425,7 +430,7 @@ u16_t init_RHD(){
                 RHD_err = RHD_init(Register_config_spike_raw);
         }else if(sampe_mode == 3){
                 // esb_set_tx_power(ESB_TX_POWER_4DBM); 
-                // spike 12.5khz + 1.25khz lfp 6 ms
+                // spike 12.5khz + 1khz lfp
                 timer_period = 5;  // 1000 / 12.5 / Channel_recorded
                 reset_ticks_value = MODE_3_SPI_RX_BUF_SIZE;
                 RHD_err = RHD_init(Register_config_mode3);
@@ -840,7 +845,7 @@ int main(void)
                                 }else{
                                         esb_set_retransmit_count(2);  // 2 比较稳定
                                 }
-                                esb_set_rf_channel(83);
+                                esb_set_rf_channel(84);
 
                         }else{ // fast mode switch
                                 mode_switch_flag = false;
@@ -917,12 +922,20 @@ int main(void)
                                                                                     decimated_buffer_LFP, mua_output, decimated_buffer_ESA);
                                 // Convert LFP & ESA data from float to uint16 for transmission
                                 convert_rhd2132_samples(mode_3_array_lfp_t, decimated_buffer_LFP, MODE_3_LFP_SIZE, Filter_scale, 0);
-                                convert_rhd2132_samples(mode_3_array_esa_t, decimated_buffer_ESA , MODE_3_LFP_SIZE, Filter_scale, 0);
+                                convert_rhd2132_samples(mode_3_array_esa_t, decimated_buffer_ESA , MODE_3_ESA_SIZE, Filter_scale, 0);
                         }
                 /*** 3. ESB package organization ***/ 
                         if(sampe_mode == 0){ // lfp 
+                                convert_rhd2132_samples(channel_array[0], mode_0_input_buffer,
+                                                         Channel_recorded * SAMPLE_POINT_NUM * time_window,
+                                                         Filter_scale, 1);
+                                process_lfp_lowpass_decimate(mode_0_input_buffer, SAMPLE_POINT_NUM * time_window, mode_0_decimated_buffer);
+                                convert_rhd2132_samples(mode_0_array_lfp_t, mode_0_decimated_buffer,
+                                                         Channel_recorded * MODE0_DECIMATED_SAMPLES_PER_CHANNEL,
+                                                         Filter_scale, 0);
                                 // means if the fifo is full, the newest packets will not be added to fifo
-                                err = tx_payload_wrap(channel_array[0], imu_data, lc_data, (SAMPLE_POINT_NUM*CONVERT_FASHION_NUM));
+                                err = tx_payload_wrap(mode_0_array_lfp_t, imu_data, lc_data,
+                                                      (Channel_recorded * MODE0_DECIMATED_SAMPLES_PER_CHANNEL));
                                 // cost 30 us in nrf-52840 to wrap one package with 96 u16_t data
 
                         }else if(sampe_mode == 1){ // spike: one channel raw data + raster
@@ -951,7 +964,9 @@ int main(void)
                         
                 /*** 4. suspend main thread and wait to be waked up ***/
                 sensor_update_flag = 0;
-                k_sleep(K_FOREVER); 
+                if(sampe_mode == 0){ // 只在mode0下做低功耗的处理
+                        k_sleep(K_FOREVER); 
+                }
                 }
 	}
         return 0;

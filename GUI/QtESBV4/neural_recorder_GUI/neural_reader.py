@@ -26,6 +26,7 @@ import collections as coll
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 import re
 import queue as _pyqueue
+import os
 try:
     from pyedflib import EdfWriter, FILETYPE_EDFPLUS
     EDF_AVAILABLE = True
@@ -121,7 +122,7 @@ def save_process_main(queue):
                 mode0_sensors["UpdateFlag"].extend(update_flags)
                 
                 # Check for potential memory overflow (e.g. > 2 hours of data without flush)
-                if len(mode0_raw["TimeStamp"]) > 9000000: # ~2 hours at 1250Hz
+                if len(mode0_raw["TimeStamp"]) > 7200000: # ~2 hours at 1000Hz
                      logging.warning(f"Memory Warning: Mode 0 buffer size {len(mode0_raw['TimeStamp'])} samples. Flush may be missing.")
 
             elif mode == 3:
@@ -141,7 +142,7 @@ def save_process_main(queue):
                         mode3_sensors[k].extend(v)
                 mode3_sensors["UpdateFlag"].extend(update_flags)
                 
-                if len(mode3_raw["TimeStamp"]) > 9000000:
+                if len(mode3_raw["TimeStamp"]) > 7200000:
                      logging.warning(f"Memory Warning: Mode 3 buffer size {len(mode3_raw['TimeStamp'])} samples.")
             continue
 
@@ -172,7 +173,7 @@ def save_process_main(queue):
                 mode0_sensors = get_events_data_container()
 
                 _finalize_miss_packets(raw_snapshot, float(params.get("LFP_max_interval", 5)))
-                start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 3.2)
+                start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 4.0)
 
                 write_q.put({
                     "mode": 0,
@@ -195,8 +196,8 @@ def save_process_main(queue):
                 mode3_raw = get_mode3_data_container()
                 mode3_sensors = get_events_data_container()
 
-                _finalize_miss_packets(raw_snapshot, float(params.get("mode3_max_interval", 4)))
-                start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 2.4)
+                _finalize_miss_packets(raw_snapshot, float(params.get("mode3_max_interval", 3)))
+                start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 2.0)
 
                 write_q.put({
                     "mode": 3,
@@ -206,8 +207,8 @@ def save_process_main(queue):
                     "start_time": start_time,
                     "end_timestamp": end_timestamp,
                     "params": {
-                        "mode3_max_interval": params.get("mode3_max_interval", 4),
-                        "raw_data_per_packet_mode3": params.get("raw_data_per_packet_mode3", 3),
+                        "mode3_max_interval": params.get("mode3_max_interval", 3),
+                        "raw_data_per_packet_mode3": params.get("raw_data_per_packet_mode3", 2),
                         "sensor_name": params.get("sensor_name", []),
                         "sensor_fs": params.get("sensor_fs", 0),
                         "mode3_raw_max_interval": params.get("mode3_raw_max_interval", 15),
@@ -225,6 +226,24 @@ def save_process_main(queue):
     except Exception:
         pass
 
+def _get_daily_dir(base_path, start_time):
+    """
+    Generate a daily subdirectory path based on the start_time.
+    Creates the directory if it doesn't exist.
+    """
+    date_str = start_time.strftime('%Y-%m-%d')
+    base_dir = os.path.dirname(base_path)
+    daily_dir = os.path.join(base_dir, date_str)
+    
+    if not os.path.exists(daily_dir):
+        try:
+            os.makedirs(daily_dir)
+        except OSError:
+            pass # Directory might have been created by another process
+            
+    base_name = os.path.basename(base_path)
+    return os.path.join(daily_dir, base_name)
+
 def _process_mode0_save(task):
     raw_data = task['raw_data']
     sensors_data = task['sensors_data']
@@ -238,6 +257,9 @@ def _process_mode0_save(task):
     sensor_name = params['sensor_name']
     sensor_fs = params['sensor_fs']
     
+    # Update addr to point to daily subdirectory
+    addr = _get_daily_dir(addr, start_time)
+    
     now_str = start_time.strftime('%Y-%m-%d-%H-%M-%S')
     
     # LFP 16 channels
@@ -246,32 +268,40 @@ def _process_mode0_save(task):
         lfp_channels,
         raw_data["TimeStamp"],
         raw_data_per_packet_channel,
-        LFP_max_interval
+        LFP_max_interval,
+        physical_mins=-1000.0  # Explicitly pass physical min for LFP channels
     )
     lfp_labels = [f"Ch{i}" for i in range(16)]
-    lfp_fs = [1250] * 16
+    lfp_fs = [1000] * 16
     lfp_filename = addr[0:-4] + str(now_str) + "lfp.edf"
     
     End_ts = task.get('end_timestamp', 0.0)
-    lfp_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+    raw_ts = raw_data.get("TimeStamp", [])
+    last_hw_ts = raw_ts[-1] if len(raw_ts) > 0 else 0
+    lfp_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
     
     _safe_write_edf(lfp_filename, lfp_channels_filled, lfp_labels, lfp_fs, 
                     dimension='uV', annotations=lfp_annotations, starttime=start_time)
     
     # Sensors
     sensor_channels = [sensors_data[k] for k in sensor_name]
+    s_mins, s_maxs = _get_sensor_phys_ranges(sensor_name)
+    s_dims = _get_sensor_dimensions(sensor_name)
+    
     sensor_channels_filled = _interpolate_missing_packets_by_min(
         sensor_channels,
         raw_data["TimeStamp"],
         1,
-        LFP_max_interval
+        LFP_max_interval,
+        physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
     sensor_filename = addr[0:-4] + str(now_str) + "sensor.edf"
-    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
     
     _safe_write_edf(sensor_filename, sensor_channels_filled, sensor_name, sensor_fs_list, 
-                    dimension='unit', annotations=sensor_annotations, starttime=start_time)
+                    physical_min=s_mins, physical_max=s_maxs,
+                    dimension=s_dims, annotations=sensor_annotations, starttime=start_time)
 
 def _process_mode3_save(task):
     esa_data = task['raw_data']
@@ -286,6 +316,9 @@ def _process_mode3_save(task):
     sensor_fs = params['sensor_fs']
     mode3_raw_max_interval = params['mode3_raw_max_interval']
     
+    # Update addr to point to daily subdirectory
+    addr = _get_daily_dir(addr, start_time)
+    
     now_str = start_time.strftime('%Y-%m-%d-%H-%M-%S')
     
     # LFP & ESA
@@ -298,33 +331,41 @@ def _process_mode3_save(task):
         all_channels,
         esa_data["TimeStamp"],
         raw_data_per_packet_mode3,
-        mode3_max_interval
+        mode3_max_interval,
+        physical_mins=-1000.0 # Explicitly pass physical min for LFP/ESA channels
     )
     labels = [f"Ch{i}" for i in range(16)] + [f"ESA{i}" for i in range(16)]
-    fs = [1250] * len(all_channels)
+    fs = [1000] * len(all_channels)
     dims = ['uV'] * 32
     mode3_filename = addr[0:-4] + str(now_str) + "LFP&ESA.edf"
     
     End_ts = task.get('end_timestamp', 0.0)
-    mode3_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+    raw_ts = esa_data.get("TimeStamp", [])
+    last_hw_ts = raw_ts[-1] if len(raw_ts) > 0 else 0
+    mode3_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
     
     _safe_write_edf(mode3_filename, all_channels_filled, labels, fs, 
                     dimension=dims, annotations=mode3_annotations, starttime=start_time)
     
     # Sensors
     sensor_channels = [sensors_data[k] for k in sensor_name]
+    s_mins, s_maxs = _get_sensor_phys_ranges(sensor_name)
+    s_dims = _get_sensor_dimensions(sensor_name)
+    
     sensor_channels_filled = _interpolate_missing_packets_by_min(
         sensor_channels,
         esa_data["TimeStamp"],
         1,
-        mode3_max_interval
+        mode3_max_interval,
+        physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
     sensor_filename = addr[0:-4] + str(now_str) + "sensor.edf"
-    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
     
     _safe_write_edf(sensor_filename, sensor_channels_filled, sensor_name, sensor_fs_list, 
-                    dimension='unit', annotations=sensor_annotations, starttime=start_time)
+                    physical_min=s_mins, physical_max=s_maxs,
+                    dimension=s_dims, annotations=sensor_annotations, starttime=start_time)
     
     # Raw Data
     raw_samples = esa_data.get("Raw_data", [])
@@ -338,19 +379,30 @@ def _process_mode3_save(task):
             raw_samples, raw_timestamps, raw_sizes, mode3_raw_max_interval
         )
         ch_broadcast = _broadcast_channel_to_samples_by_variable(
-            raw_ch_list, raw_sizes, raw_timestamps, mode3_raw_max_interval, filler_value=-10000
+            raw_ch_list, raw_sizes, raw_timestamps, mode3_raw_max_interval, filler_value=-1000
         )
         alignment_filled = _interpolate_missing_packets_by_min_variable(
-            raw_alignment, raw_timestamps, raw_sizes, mode3_raw_max_interval
+            raw_alignment, raw_timestamps, raw_sizes, mode3_raw_max_interval, filler_value=0
         )
         
         labels = ["RawData", "RawChannel", "Alignment"]
         fs = [12500, 12500, 12500]
         dims = ["uV", "index", "unit"]
+        # Use expanded range for Alignment channel to handle large values
+        # RawData: +/- 1000 uV
+        # RawChannel: +/- 1000
+        # Alignment: 0-65535 (16-bit unsigned mapped to 16-bit signed range)
+        phys_mins = [-1000.0, -1000.0, 0.0]
+        phys_maxs = [1000.0, 1000.0, 65535.0]
+        
         mode3_raw_filename = addr[0:-4] + str(now_str) + "mode3_raw.edf"
-        raw_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+        
+        raw_ts = raw_timestamps
+        last_hw_ts = raw_ts[-1] if len(raw_ts) > 0 else 0
+        raw_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
         
         _safe_write_edf(mode3_raw_filename, [raw_filled, ch_broadcast, alignment_filled], labels, fs, 
+                        physical_min=phys_mins, physical_max=phys_maxs,
                         dimension=dims, annotations=raw_annotations, starttime=start_time)
 
 def _process_mode1_save(task):
@@ -364,6 +416,9 @@ def _process_mode1_save(task):
     sensor_name = params['sensor_name']
     sensor_fs = params['sensor_fs']
     
+    # Update addr to point to daily subdirectory
+    addr = _get_daily_dir(addr, start_time)
+    
     now_str = start_time.strftime('%Y-%m-%d-%H-%M-%S')
     
     # Raw Data
@@ -372,7 +427,8 @@ def _process_mode1_save(task):
         raw_samples,
         ap_data["Raw_timestamp"],
         90,
-        Spike_max_interval
+        Spike_max_interval,
+        physical_mins=-1000.0 # Explicitly pass physical min for Raw channel
     )
     labels = ["Raw"]
     fs = [20833]
@@ -388,25 +444,31 @@ def _process_mode1_save(task):
         annotations.append((onset_sec, 0.0, desc))
     
     End_ts = task.get('end_timestamp', 0.0)
-    annotations.insert(0, (0.0, 0.0, f"EndTimestamp(ms)={End_ts}"))
+    last_hw_ts = ap_data['Raw_timestamp'][-1] if len(ap_data['Raw_timestamp'])>0 else 0
+    annotations.insert(0, (0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}"))
     
     _safe_write_edf(mode1_filename, raw_samples_filled, labels, fs, 
                     dimension='uV', annotations=annotations, starttime=start_time)
     
     # Sensors
     sensor_channels = [sensors_data[k] for k in sensor_name]
+    s_mins, s_maxs = _get_sensor_phys_ranges(sensor_name)
+    s_dims = _get_sensor_dimensions(sensor_name)
+    
     sensor_channels_filled = _interpolate_missing_packets_by_min(
         sensor_channels,
         ap_data["Raw_timestamp"],
         1,
-        Spike_max_interval
+        Spike_max_interval,
+        physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
     sensor_filename = addr[0:-4] + str(now_str) + "sensor.edf"
-    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+    sensor_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
     
     _safe_write_edf(sensor_filename, sensor_channels_filled, sensor_name, sensor_fs_list, 
-                    dimension='unit', annotations=sensor_annotations, starttime=start_time)
+                    physical_min=s_mins, physical_max=s_maxs,
+                    dimension=s_dims, annotations=sensor_annotations, starttime=start_time)
 
 def _process_mode2_save(task):
     ap_lfp_data = task['raw_data']
@@ -415,6 +477,9 @@ def _process_mode2_save(task):
     params = task['params']
     
     mode2_max_interval = params['mode2_max_interval']
+    
+    # Update addr to point to daily subdirectory
+    addr = _get_daily_dir(addr, start_time)
     
     now_str = start_time.strftime('%Y-%m-%d-%H-%M-%S')
     
@@ -431,18 +496,47 @@ def _process_mode2_save(task):
             channels,
             ap_lfp_data["TimeStamp"],
             30,
-            mode2_max_interval
+            mode2_max_interval,
+            physical_mins=-1000.0 # Explicitly pass physical min for AP/LFP channels
         )
         fs = [20833] * len(channels_filled)
         mode2_filename = addr[0:-4] + str(now_str) + "AP_LFP_Raw_data.edf"
         
         End_ts = task.get('end_timestamp', 0.0)
-        mode2_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={End_ts}")]
+        raw_ts = ap_lfp_data.get("TimeStamp", [])
+        last_hw_ts = raw_ts[-1] if len(raw_ts) > 0 else 0
+        mode2_annotations = [(0.0, 0.0, f"EndTimestamp(ms)={last_hw_ts}")]
         
         _safe_write_edf(mode2_filename, channels_filled, labels, fs, 
                         dimension='uV', annotations=mode2_annotations, starttime=start_time)
 
-def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min=-10000.0, physical_max=10000.0, dimension='uV', annotations=None, starttime=None):
+def _get_sensor_phys_ranges(sensor_names):
+    p_mins = []
+    p_maxs = []
+    for name in sensor_names:
+        if "Gryo" in name:
+            p_mins.append(-500.0)
+            p_maxs.append(500.0)
+        elif "Accl" in name:
+            p_mins.append(-10.0)
+            p_maxs.append(10.0)
+        else:
+            p_mins.append(-5000.0)
+            p_maxs.append(5000.0)
+    return p_mins, p_maxs
+
+def _get_sensor_dimensions(sensor_names):
+    dims = []
+    for name in sensor_names:
+        if "Accl" in name:
+            dims.append("g")
+        elif "Gryo" in name:
+            dims.append("dps")
+        else:
+            dims.append("unit")
+    return dims
+
+def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min=-1000.0, physical_max=1000.0, dimension='uV', annotations=None, starttime=None):
     """Write signals to an EDF/EDF+ file using pyedflib.
     Falls back by raising if pyedflib is unavailable so caller can handle.
 
@@ -452,7 +546,8 @@ def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min
     - annotations: optional list of tuples (onset_seconds, duration_seconds, description)
     - starttime: datetime object for the file start time
     
-    注意： edf 文件按 秒来对齐数据，所有每一个edf文件最后都会补充一段0值来对齐到下一秒，在后续数据处理过程中需要裁切一下
+    注意： edf 文件按 秒来对齐数据，所有每一个edf文件最后都会补充一段0值来对齐到下一秒，在后续数据处理过程中需要裁切一下，
+    注意： edf文件精度为16位，其精度和设定的physical min和max有关，对于-1000到1000的范围，精度为0.0078125uV
     """
     if not EDF_AVAILABLE:
         # raise RuntimeError('pyedflib is not available')
@@ -467,12 +562,17 @@ def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min
         label = labels[i] if i < len(labels) else f"Ch{i}"
         # Allow per-channel dimensions via list/tuple
         dim = dimension[i] if isinstance(dimension, (list, tuple)) and i < len(dimension) else dimension
+        
+        # Allow per-channel physical limits via list/tuple
+        p_min = physical_min[i] if isinstance(physical_min, (list, tuple)) and i < len(physical_min) else physical_min
+        p_max = physical_max[i] if isinstance(physical_max, (list, tuple)) and i < len(physical_max) else physical_max
+        
         sh = {
             'label': label,
             'dimension': dim,
             'sample_frequency': sr,
-            'physical_min': float(physical_min),
-            'physical_max': float(physical_max),
+            'physical_min': float(p_min),
+            'physical_max': float(p_max),
             'digital_min': -32768,
             'digital_max': 32767,
             'transducer': '',
@@ -517,7 +617,7 @@ def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min
 
     writer.close()
 
-def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_samples, max_interval):
+def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_samples, max_interval, physical_mins=None):
     """Insert filler samples for detected missing packets using a fixed minimum value 0.0.
     Returns new arrays suitable for EDF writing.
     """
@@ -525,12 +625,24 @@ def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_sampl
         return channel_arrays
     n_packets_ts = len(timestamps)
     chunks_per_channel = []
-    mins_per_channel = []
+    
+    # Handle physical mins
+    n_channels = len(channel_arrays)
+    if physical_mins is None:
+        mins_per_channel = [-1000] * n_channels
+    elif isinstance(physical_mins, (int, float)):
+        mins_per_channel = [physical_mins] * n_channels
+    elif isinstance(physical_mins, (list, tuple)):
+        if len(physical_mins) >= n_channels:
+            mins_per_channel = physical_mins[:n_channels]
+        else:
+            mins_per_channel = list(physical_mins) + [-1000] * (n_channels - len(physical_mins))
+    else:
+        mins_per_channel = [-1000] * n_channels
+        
     usable_n_packets = n_packets_ts
-    for arr in channel_arrays:
+    for i, arr in enumerate(channel_arrays):
         a = list(arr)
-        # Use fixed minimum value 0.0 for filler
-        mins_per_channel.append(-10000)
         n_pack_arr = (len(a) // packet_samples) if packet_samples > 0 else 0
         usable_n_packets = min(usable_n_packets, n_pack_arr)
         chunks = [a[i*packet_samples:(i+1)*packet_samples] for i in range(n_pack_arr)]
@@ -569,13 +681,13 @@ def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_sampl
 
     return [np.asarray(a, dtype=np.float64) for a in filled_arrays]
 
-def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_sizes, max_interval):
+def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_sizes, max_interval, filler_value=-1000):
     """Interpolate missing packets for a single-channel array where packet sizes may vary.
     - raw_array: flat list/array of samples concatenated across packets
     - timestamps: list of per-packet timestamps (ms)
     - packet_sizes: list of per-packet sample counts
     - max_interval: threshold (ms) above which a gap indicates missing packets
-    Returns a single numpy array with -10000 fillers inserted for missing packets.
+    Returns a single numpy array with filler_value inserted for missing packets.
     """
     import numpy as np
     if raw_array is None or timestamps is None:
@@ -617,7 +729,7 @@ def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_s
         if j in missing_counts and j < (n_packets - 1 - 1):
             filler_len = missing_counts[j] * med_size
             if filler_len > 0:
-                filled.extend([-10000] * filler_len)
+                filled.extend([filler_value] * filler_len)
     return np.asarray(filled, dtype=np.float64)
 
 def _build_timestamp_samples(timestamps, packet_samples, max_interval=None, insert_filler=True):
@@ -661,7 +773,7 @@ def _build_timestamp_samples(timestamps, packet_samples, max_interval=None, inse
 
     return np.asarray(ts_samples, dtype=np.float64)
 
-def _broadcast_channel_to_samples_by_variable(channels, packet_sizes, timestamps, max_interval, filler_value=-10000):
+def _broadcast_channel_to_samples_by_variable(channels, packet_sizes, timestamps, max_interval, filler_value=-1000):
     """Broadcast per-packet Raw_channel to per-sample array using variable packet sizes.
     - channels: list of per-packet channel indices
     - packet_sizes: list of per-packet sample counts
@@ -894,7 +1006,7 @@ def gaussian_kernel1d(sigma, order, radius):
         return q * phi_x
 
 # filter
-def LFP_filter(data, low_cutoff="None", high_cutoff="None", fs=1250, order=4): 
+def LFP_filter(data, low_cutoff="None", high_cutoff="None", fs=1000, order=4): 
     """
     对神经信号进行带通、低通或高通滤波
     
@@ -981,6 +1093,7 @@ class SerialPort(QThread):
         self.Timestamp_HABITS_Trial = 0 # onset of one trial
         self.Timestamp_neural_signal = 0 # Raw timestamp of neural signal
         self.alignment_counter = 0
+        self.current_alignment_value = 1
 
         self.GUIUpdateInterval = 20 # packets num
 
@@ -1012,7 +1125,7 @@ class SerialPort(QThread):
         self.raw_data_per_packet_channel = 4
         self.raw_data_index_base = np.arange(9, 9 + self.raw_data_per_packet_channel, dtype=np.int64)
         # mode 3
-        self.raw_data_per_packet_mode3 = 3
+        self.raw_data_per_packet_mode3 = 2
         self.raw_data_index_base_mode3 = np.arange(9, 9 + self.raw_data_per_packet_mode3, dtype=np.int64)
         # sensors
         self.sensor_index = np.arange(9, dtype=np.int64)
@@ -1020,6 +1133,7 @@ class SerialPort(QThread):
         """ Test Modes """
         # mode 1
         self.spike_channel_index_mode1_3 = 16 # mode 1
+        self.mode3_reref_status = 0
         # mode 2
         self.spike_FIFO_mode2 = coll.deque(maxlen=1000)
         self.spike_raw_channel = [0, 1, 2, 3] # 记录当前记录spike的raw channel; mode 2
@@ -1075,22 +1189,22 @@ class SerialPort(QThread):
         self._mode2_progress_bucket = -1
         
         self.sensor_fs = 0
-        self.file_duration_lfp = 1000 * 60 * 10 # minutes
+        self.file_duration_lfp = 1000 * 60 * 30 # minutes
         self.file_duration_mode1 = 1000 * 60 * 10
         self.file_duration_mode2 = 1000 * 60  * 10
-        self.file_duration_mode3 = 1000 * 60 * 10 # minutes 考虑到一个trial block 最大 60分钟
+        self.file_duration_mode3 = 1000 * 60 * 60 # minutes 考虑到一个trial block 最大 60分钟
         # packets; default: equal to self.GUIUpdateInterval; in 1khz LFP: it's 12s；# 这个值不能设置太大，否则会导致缓存问题
-        self.file_size_lfp = self.file_duration_lfp // 3.2 # ~1.25khz 4points per channel one packets 这样保证每一个文件的大小都是一样的，但对应的数据duration不一定（丢包问题）
+        self.file_size_lfp = self.file_duration_lfp // 4.0 # ~1khz 4points per channel one packets 这样保证每一个文件的大小都是一样的，但对应的数据duration不一定（丢包问题）
         self.file_size_mode1 = self.file_duration_mode1 // 4.32 # 90points per channel at 20833Hz, single channel one packets
         self.file_size_mode2 = self.file_duration_mode2 // 1.44 # 30points per channel at 20833Hz, 4 channel one packets
-        self.file_size_mode3 = self.file_duration_mode3 // 2.4 # 3points per channel at 1250Hz, 16 channel LFP&ESA (1.25Khz + 1.25Khz) one packets
+        self.file_size_mode3 = self.file_duration_mode3 // 2.0 # 2points per channel at 1000Hz, 16 channel LFP&ESA (1Khz + 1Khz) one packets
         
         self.overflowSignal = [0, 0] # last and current
 
         self.LFP_max_interval = 5 # the maximum interval between raw data packets: 1khz lfp 32 channels: 3
         self.Spike_max_interval = 6 # same as above but for the minimum value
         self.mode2_max_interval = 2
-        self.mode3_max_interval = 4
+        self.mode3_max_interval = 3
         self.mode3_raw_max_interval = 15
 
         """ IMU & LC data recording """
@@ -1261,8 +1375,9 @@ class SerialPort(QThread):
         """ Main loop: read data from usbd """
         while(True): 
             temp_frame = self.port.read_all()
-            if(len(temp_frame) == 0):
-                continue
+            # if(len(temp_frame) == 0):
+            #     time.sleep(0.001) # Sleep 1ms to prevent CPU hogging
+            #     continue
             full_frame += bytearray(temp_frame)
             if(full_frame[-4:] != b'%&\'('):
                 continue
@@ -1363,9 +1478,10 @@ class SerialPort(QThread):
                     pass
 
                     """ ESA packets: mode 3 """
-                elif(packets_type == 7 and packet_length == 112): 
+                elif(packets_type == 7 and packet_length == 80): 
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter # int(time.time() * 1000)
+                    self.mode3_reref_status = int(packets[0:2] ,16)
 
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16)# sensor signal
@@ -1376,7 +1492,7 @@ class SerialPort(QThread):
                         self.Mode3RawCounter += 1
                     pass
                 
-                elif(packets_type == 8 and packet_length == 124): # single channel Raw data recording
+                elif(packets_type == 8 and packet_length == 104): # single channel Raw data recording
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) # timestamp
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter
 
@@ -1430,10 +1546,11 @@ class SerialPort(QThread):
 ##############################################################
 ##############################################################
 
-    def trigger_alignment(self):
+    def trigger_alignment(self, trial_num=1.0):
         """Trigger alignment signal (6ms duration)"""
         # Mode 3 Raw is 12.5kHz. 6ms = 0.006 * 12500 = 75 samples.
         self.alignment_counter = 75
+        self.current_alignment_value = float(trial_num)
 
     def mode_3_packets_process(self, mode_3_data_buffer):
         # spilt
@@ -1508,7 +1625,15 @@ class SerialPort(QThread):
         ones_count = min(self.alignment_counter, num_samples)
         zeros_count = num_samples - ones_count
         
-        current_alignment_vals = [1.0] * ones_count + [0.0] * zeros_count
+        # Ensure alignment value fits within physical range [-1000, 1000] or special range [0, 65535]
+        # (Though we expanded the range in writer, this adds safety against extremely large IDs)
+        # Note: Writer now supports 0-65535 for alignment channel.
+        # Logic: If value exceeds 65535, wrap around (modulo 65536)
+        align_val = self.current_alignment_value
+        if align_val > 65535:
+             align_val = (align_val % 65536)
+             
+        current_alignment_vals = [align_val] * ones_count + [0.0] * zeros_count
         
         # Update counter
         if self.alignment_counter > 0:
@@ -1606,7 +1731,7 @@ class SerialPort(QThread):
             save_packet_sensors = [[] for _ in range(9)]
         for channel_num in range(16):
             temp_channel = lfp_data_buffer[self.raw_data_index_base + channel_num * self.raw_data_per_packet_channel]
-            temp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_channel))
+            temp_channel_DAC = list(map(lambda x:self.DAC(swap16Hex(x), raw=False), temp_channel))
             self.lfpdata_GUI[channel_num].extend(temp_channel_DAC)
             if save_packet_channels is not None:
                 save_packet_channels[channel_num] = temp_channel_DAC
@@ -1713,8 +1838,8 @@ class SerialPort(QThread):
                     "LFP_max_interval": self.LFP_max_interval,
                     "raw_data_per_packet_channel": self.raw_data_per_packet_channel,
                     "sensor_name": self.sensor_name,
-                    "sensor_fs": int(1250/4),
-                }, # self.sensor_fs = 1250 / 4 # 4个点对应 1个IMU 数据点
+                    "sensor_fs": int(1000/4),
+                }, # self.sensor_fs = 1000 / 4 # 4个点对应 1个IMU 数据点
             })
 
             # 3.5 camera
@@ -1723,7 +1848,7 @@ class SerialPort(QThread):
             if(sum(self.overflowSignal) == 1): #  重新开始sample
                 self.sample_times += 1
                 self.overflowSignal[0] = self.overflowSignal[1]
-                print("sample begin!")
+                # print("sample begin!")
 
     def save_spike_mode3_file(self, addr, manual_save=False):
         """ save data to a file"""
@@ -1750,7 +1875,7 @@ class SerialPort(QThread):
                     "mode3_max_interval": self.mode3_max_interval,
                     "raw_data_per_packet_mode3": self.raw_data_per_packet_mode3,
                     "sensor_name": self.sensor_name,
-                    "sensor_fs": int(1250/3), #self.sensor_fs = 1250 / 3 
+                    "sensor_fs": int(1000/2), #self.sensor_fs = 1000 / 2
                     "mode3_raw_max_interval": self.mode3_raw_max_interval,
                 },
             })
@@ -1762,7 +1887,7 @@ class SerialPort(QThread):
             if(sum(self.overflowSignal) == 1): #  重新开始sample
                 self.sample_times += 1
                 self.overflowSignal[0] = self.overflowSignal[1]
-                print("sample begin!")
+                # print("sample begin!")
            
     def save_spike_mode1_file(self, addr, manual_save=False):
         curr_bucket = self.SPIKERawCounter // 500
@@ -1822,7 +1947,7 @@ class SerialPort(QThread):
             if(sum(self.overflowSignal) == 1): #  重新开始sample
                 self.sample_times += 1
                 self.overflowSignal[0] = self.overflowSignal[1]
-                print("sample begin!")
+                # print("sample begin!")
         pass
 
     def save_spike_mode2_file(self, addr, manual_save=False):
@@ -1881,7 +2006,7 @@ class SerialPort(QThread):
             if(sum(self.overflowSignal) == 1): #  重新开始sample
                 self.sample_times += 1
                 self.overflowSignal[0] = self.overflowSignal[1]
-                print("sample begin!")
+                # print("sample begin!")
         pass
 
 
@@ -1899,7 +2024,7 @@ class SerialPort(QThread):
             spikerasterdata_copy = [list(ch) for ch in self.spikerasterdata_GUI]
             esadata_copy = [list(ch) for ch in self.ESAdata_GUI]
             
-            self.GUIUpdate.emit([[0], list(self.lfptimestamp_GUI), lfpdata_copy, sensordata_copy, spikerasterdata_copy, esadata_copy]) # mode 0
+            self.GUIUpdate.emit([[0, self.mode3_reref_status], list(self.lfptimestamp_GUI), lfpdata_copy, sensordata_copy, spikerasterdata_copy, esadata_copy]) # mode 0
             
             # Clear existing buffers instead of creating new ones to prevent memory fragmentation
             self.lfptimestamp_GUI.clear()
@@ -1915,7 +2040,8 @@ class SerialPort(QThread):
             sensordata_copy = [list(ch) for ch in self.sensordata_GUI]
             spikerasterdata_copy = [list(ch) for ch in self.spikerasterdata_GUI]
             
-            self.GUIUpdate.emit([[1, self.spike_channel_index_mode1_3], list(self.spiketimestamp_GUI), spikedata_copy, sensordata_copy, spikerasterdata_copy, list(self.alignment_GUI)]) # mode 1
+            self.GUIUpdate.emit([[1, self.spike_channel_index_mode1_3], list(self.spiketimestamp_GUI), spikedata_copy, sensordata_copy, spikerasterdata_copy, 
+            list(self.alignment_GUI)]) # mode 1
             
             # Clear
             self.spiketimestamp_GUI.clear()

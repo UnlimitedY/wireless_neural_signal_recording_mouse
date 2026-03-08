@@ -34,6 +34,7 @@ extern u8_t recorded_channel_num; // lfp raw data: channel number
 extern u8_t spike_raw_channel[4]; // spike raw data: channel index: maximum 4 channels recorded 
 extern u8_t recorded_spike_channel; // spike raw data: mode 1
 extern u8_t mode3_raw_chunk_count;
+extern u8_t mode3_esa_reref_enable;
 
 extern bool overflow_signal;
 extern uint64_t stamp_check; // real-time timestamp from the power-up

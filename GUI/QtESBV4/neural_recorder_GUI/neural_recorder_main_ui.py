@@ -65,7 +65,7 @@ class TimelineWidget(QWidget):
         self.rf_timestamps = []
         self.rf_values = []
         # Magenta for RF Power
-        self.rf_curve = self.plot_widget.plot(pen=pg.mkPen(color='#FFFFFF', width=1, style=Qt.PenStyle.DashLine), name='RF Power')
+        self.rf_curve = self.plot_widget.plot(pen=pg.mkPen(color='k', width=1, style=Qt.PenStyle.DashLine), name='RF Power')
         
         # Modes: list of LinearRegionItem
         self.mode_regions = [] 
@@ -477,67 +477,87 @@ class LfpTab(BaseDisplayTab):
         super().__init__("16 channels LFP+ESA signal", parent)
 
     def populate_controls(self):
-        # 文件保存功能 - 分离LFP与Mode3路径
-        lfp_file_layout = QHBoxLayout()
-        lfp_file_layout.addWidget(QLabel("LFP File:"))
+        # LFP Control Row (File Selection + Save Controls)
+        lfp_layout = QHBoxLayout()
+        
+        # File Selection Part
+        lfp_layout.addWidget(QLabel("LFP File:"))
         self.lfp_file_path_label = QLabel("File path don't selected")
-        lfp_file_layout.addWidget(self.lfp_file_path_label, 1)
+        # Ensure path label has some space but doesn't squash buttons too much, 
+        # but here we use stretch 1 to let it take available space
+        lfp_layout.addWidget(self.lfp_file_path_label, 1)
+        
         self.lfp_select_file_button = QPushButton("Choice")
         self.lfp_select_file_button.setMaximumWidth(70)
         self.lfp_select_file_button.clicked.connect(self.select_lfp_file)
-        lfp_file_layout.addWidget(self.lfp_select_file_button)
-        self.control_panel_layout.addLayout(lfp_file_layout, 0, 0, 1, 2)
-
-        # LFP保存按钮独立一行
-        lfp_save_layout = QHBoxLayout()
+        lfp_layout.addWidget(self.lfp_select_file_button)
+        
+        # Separator
+        lfp_layout.addSpacing(20)
+        line1 = QFrame()
+        line1.setFrameShape(QFrame.Shape.VLine)
+        line1.setFrameShadow(QFrame.Shadow.Sunken)
+        lfp_layout.addWidget(line1)
+        lfp_layout.addSpacing(20)
+        
+        # Save Controls Part
         self.start_save_button = QPushButton("LFP Save Start")
-        lfp_save_layout.addWidget(self.start_save_button)
+        lfp_layout.addWidget(self.start_save_button)
+        
         self.stop_save_button = QPushButton("LFP Save Stop")
         self.stop_save_button.setEnabled(False)
-        lfp_save_layout.addWidget(self.stop_save_button)
+        lfp_layout.addWidget(self.stop_save_button)
         
-        # LFP Progress Bar
         self.lfp_progress_bar = QProgressBar()
         self.lfp_progress_bar.setRange(0, 100)
         self.lfp_progress_bar.setValue(0)
         self.lfp_progress_bar.setTextVisible(True)
         self.lfp_progress_bar.setFormat("%p%")
-        lfp_save_layout.addWidget(self.lfp_progress_bar)
+        self.lfp_progress_bar.setFixedWidth(120) # Fixed width for clearer layout
+        lfp_layout.addWidget(self.lfp_progress_bar)
         
-        lfp_save_layout.addStretch(1)
-        self.control_panel_layout.addLayout(lfp_save_layout, 1, 0, 1, 2)
+        self.control_panel_layout.addLayout(lfp_layout, 0, 0, 1, 2)
 
-        # Mode3路径一行
-        mode3_file_layout = QHBoxLayout()
-        mode3_file_layout.addWidget(QLabel("Mode3 File:"))
+        # Mode3 Control Row (File Selection + Save Controls)
+        mode3_layout = QHBoxLayout()
+        
+        # File Selection Part
+        mode3_layout.addWidget(QLabel("Mode3 File:"))
         self.mode3_file_path_label = QLabel("File path don't selected")
-        mode3_file_layout.addWidget(self.mode3_file_path_label, 1)
+        mode3_layout.addWidget(self.mode3_file_path_label, 1)
+        
         self.mode3_select_file_button = QPushButton("Choice")
         self.mode3_select_file_button.setMaximumWidth(70)
         self.mode3_select_file_button.clicked.connect(self.select_mode3_file)
-        mode3_file_layout.addWidget(self.mode3_select_file_button)
-        self.control_panel_layout.addLayout(mode3_file_layout, 2, 0, 1, 2)
-
-        # Mode3保存按钮独立一行
-        mode3_save_layout = QHBoxLayout()
+        mode3_layout.addWidget(self.mode3_select_file_button)
+        
+        # Separator
+        mode3_layout.addSpacing(20)
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.Shape.VLine)
+        line2.setFrameShadow(QFrame.Shadow.Sunken)
+        mode3_layout.addWidget(line2)
+        mode3_layout.addSpacing(20)
+        
+        # Save Controls Part
         self.start_save_mode3_button = QPushButton("Mode3 Save Start")
-        mode3_save_layout.addWidget(self.start_save_mode3_button)
+        mode3_layout.addWidget(self.start_save_mode3_button)
+        
         self.stop_save_mode3_button = QPushButton("Mode3 Save Stop")
         self.stop_save_mode3_button.setEnabled(False)
-        mode3_save_layout.addWidget(self.stop_save_mode3_button)
+        mode3_layout.addWidget(self.stop_save_mode3_button)
         
-        # Mode3 Progress Bar
         self.mode3_progress_bar = QProgressBar()
         self.mode3_progress_bar.setRange(0, 100)
         self.mode3_progress_bar.setValue(0)
         self.mode3_progress_bar.setTextVisible(True)
         self.mode3_progress_bar.setFormat("%p%")
-        mode3_save_layout.addWidget(self.mode3_progress_bar)
+        self.mode3_progress_bar.setFixedWidth(120)
+        mode3_layout.addWidget(self.mode3_progress_bar)
+        
+        self.control_panel_layout.addLayout(mode3_layout, 1, 0, 1, 2)
 
-        mode3_save_layout.addStretch(1)
-        self.control_panel_layout.addLayout(mode3_save_layout, 3, 0, 1, 2)
-
-        # 滤波器设置独立一行
+        # Filter Control Row
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(QLabel("Low cutoff:"))
         self.low_cutoff = QComboBox()
@@ -545,11 +565,22 @@ class LfpTab(BaseDisplayTab):
         self.low_cutoff.setMaximumWidth(90)
         filter_layout.addWidget(self.low_cutoff)
 
+        filter_layout.addSpacing(20)
+
         filter_layout.addWidget(QLabel("High cutoff:"))
         self.high_cutoff = QComboBox()
         self.high_cutoff.addItems(["4", "8", "13", "30","50" ,"100", "150", "250",  "300", "None"])
         self.high_cutoff.setMaximumWidth(90)
         filter_layout.addWidget(self.high_cutoff)
+
+        filter_layout.addSpacing(30)
+        
+        # Separator
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.Shape.VLine)
+        line3.setFrameShadow(QFrame.Shadow.Sunken)
+        filter_layout.addWidget(line3)
+        filter_layout.addSpacing(20)
 
         self.enable_filter_button = QPushButton("filter enable")
         self.enable_filter_button.clicked.connect(self.enable_filter)
@@ -559,8 +590,42 @@ class LfpTab(BaseDisplayTab):
         self.disable_filter_button.clicked.connect(self.disable_filter)
         self.disable_filter_button.setEnabled(False)
         filter_layout.addWidget(self.disable_filter_button)
+        
         filter_layout.addStretch(1)
-        self.control_panel_layout.addLayout(filter_layout, 4, 0, 1, 2)
+        self.control_panel_layout.addLayout(filter_layout, 2, 0, 1, 2)
+
+        # Scale Control Row
+        scale_layout = QHBoxLayout()
+        scale_layout.addWidget(QLabel("LFP Scale:"))
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(["100", "200", "500", "1000", "2000", "3000", "5000", "10000"])
+        self.scale_combo.setCurrentText("2000")
+        self.scale_combo.setMaximumWidth(90)
+        scale_layout.addWidget(self.scale_combo)
+
+        scale_layout.addSpacing(20)
+
+        scale_layout.addWidget(QLabel("ESA Factor:"))
+        self.esa_scale_combo = QComboBox()
+        self.esa_scale_combo.addItems(["1", "2", "3", "4", "5", "10"])
+        self.esa_scale_combo.setCurrentText("1")
+        self.esa_scale_combo.setMaximumWidth(90)
+        scale_layout.addWidget(self.esa_scale_combo)
+
+        scale_layout.addSpacing(30)
+        
+        # Separator
+        line4 = QFrame()
+        line4.setFrameShape(QFrame.Shape.VLine)
+        line4.setFrameShadow(QFrame.Shadow.Sunken)
+        scale_layout.addWidget(line4)
+        scale_layout.addSpacing(20)
+
+        self.update_scale_button = QPushButton("Update Scale")
+        scale_layout.addWidget(self.update_scale_button)
+        
+        scale_layout.addStretch(1)
+        self.control_panel_layout.addLayout(scale_layout, 3, 0, 1, 2)
     
     def enable_filter(self):
         """Enable filter"""
@@ -967,6 +1032,13 @@ class MainWindow(QMainWindow):
         self.auto_config_button.setMinimumHeight(35)
         self.auto_config_button.clicked.connect(self.auto_configure_paths)
         control_group_layout.addWidget(self.auto_config_button)
+
+        self.mode3_reref_mode_combo = QComboBox()
+        self.mode3_reref_mode_combo.addItems(["Mode3 ReRef: OFF", "Mode3 ReRef: FAST", "Mode3 ReRef: STABLE"])
+        self.mode3_reref_mode_combo.setCurrentIndex(0)
+        self.mode3_reref_mode_combo.setMinimumHeight(35)
+        self.mode3_reref_mode_combo.setStyleSheet("background-color: #F44336; color: white; border-radius: 4px;")
+        control_group_layout.addWidget(self.mode3_reref_mode_combo)
         
         # Global Save Enable Button
         self.global_save_enable_button = QPushButton("Global Save: ON")
@@ -1258,7 +1330,7 @@ class MainWindow(QMainWindow):
     
     def stop_sampling(self):
         """Stop sampling"""
-        print("Stop sampling...")
+        # print("Stop sampling...")
         # self.start_sampling_button.setEnabled(True)
         # self.stop_sampling_button.setEnabled(False)
         self.statusBar().showMessage("Sample stop")

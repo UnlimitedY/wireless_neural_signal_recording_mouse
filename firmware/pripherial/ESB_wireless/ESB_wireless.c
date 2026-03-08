@@ -43,7 +43,7 @@ int esb_initialize(void)
 	 * different addresses should be used for each set of devices.
 	 */
     // pipe 0 的base addr， 注意不能使用0x55和0xAA，这两个是preamble（1 byte）所使用的的地址 4bytes
-	uint8_t base_addr_0[4] = {0x49,0x49,0x49,0x49};
+	uint8_t base_addr_0[4] = {0xE7,0xE7,0xE7,0xE7};
     // pipe 1-7 的base addr 4 bytes
 	uint8_t base_addr_1[4] = {0xC2, 0xC2, 0xC2, 0xC2};
     // 8个pipes 所使用的的唯一的prefix 1 byte 的地址
@@ -94,7 +94,7 @@ int esb_initialize(void)
 	esb_set_tx_power(ESB_TX_POWER_0DBM); 
     // esb_set_tx_power(ESB_TX_POWER_4DBM); 
 
-    esb_set_rf_channel(83); 
+    esb_set_rf_channel(84); 
 	return 0;
 }
 
@@ -185,6 +185,13 @@ void command_process(uint8_t length, uint16_t *data)
             if((u8_t)data[i] < 16){
                 spike_raw_channel[i-1] = (u8_t)data[i];
             }
+        }
+    }
+        break;
+    case 0x0600:
+    {
+        if ((u8_t)data[1] <= MODE3_ESA_REREF_SAFE_MEDIAN) {
+            mode3_esa_reref_enable = (u8_t)data[1];
         }
     }
         break;
@@ -331,7 +338,7 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
     }
     txbufIndex += 3;
 
-    // 5. LFP raw data 16 channel 1.25KHz ; length: 16 * 4 = 64 points 
+    // 5. LFP raw data 16 channel 1KHz ; length: 16 * 4 = 64 points
    
     for (int i = 0; i < raw_length; i++)
     { 
@@ -455,7 +462,7 @@ int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spik
 
     u16_t txbufIndex = 0; // count the length of one tx_payload package
     // 1. pre-head of packet
-    tx_payload.data[0] = 0x0700; 
+    tx_payload.data[0] = 0x0700 | mode3_esa_reref_enable; 
     // 2. package signal including: real-time timestamp; overflow_signal
     tx_payload.data[2] = (u16_t)timestamp_LTNSRS; 
     tx_payload.data[1] = (u16_t)(timestamp_LTNSRS >> 16);

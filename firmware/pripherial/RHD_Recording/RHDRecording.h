@@ -45,8 +45,9 @@ typedef unsigned int u32_t;
 
 /*********************************** mode 0 ************************************/
 /* for LFP 16 channels raw data */
+// 这里先做12.5Khz的采样，250Hz的upper freq，然后进行 2nd 的250Hz的低通数字滤波后重采样得到1KHz；
 // 19 commands as one command packet; the bin size is 100 samples every channel
-#define SAMPLE_POINT_NUM 4 
+#define SAMPLE_POINT_NUM 50 // 4（1KHz）对应 4ms 原始窗口（12.5KHz 下为 50 点）
 #define CONVERT_FASHION_NUM 16 // 16 channels; 
 #define SPI_TX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) // 4 * 16 * 2 == 128 bytes
 #define SPI_RX_BUF_SIZE (CONVERT_FASHION_NUM * SAMPLE_POINT_NUM * time_window) //  bytes ;CONVERT_FASHION_NUM * 3(timer duration) * 100 == 5.1ms  ,using half of RX buffer to get achieve data process in line with data acquiration
@@ -87,14 +88,15 @@ extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE)]; // 
 /*********************************** mode 3 ************************************/
 // 2025.10.23：增加 mode3，只做所有通道的spike detection，根据之间的研究结果，使用12.5Khz的采样对detection的影响很小【ref】；
 // 使用mode1 来更新threshold； mode3常开来同时获得 ESA 和 spike events
-// LFP: 使用 2阶 IIR 分离出250Hz low pass, downsampling to 1.25Khz
-// ESA: 使用 1阶 IIR 250Hz 高通，之后整流，再12 hz 1阶 IIR 低通 之后下采样到1.25Khz之后上传到 host；
+// LFP: 使用 2阶 IIR 分离出250Hz low pass, resample to 1Khz
+// ESA: 使用 1阶 IIR 250Hz 高通，之后整流，再12 hz 1阶 IIR 低通 之后重采样到1Khz之后上传到 host；
 // MUA: raw data 高通后数据online spike detection，压缩为MUA 上传到host
 // 使用3-axis IMU数据，功耗期望控制在30-40 mW左右
-// 一个包：16 * 3 （LFP 1.25Khz）+ 16 * 3 （ESA 1.25Khz） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 5 (raster, 0.8 ms per short) 
-#define CHUNK_SIZE  30 // [~2.4 ms corresponding to 30 raw data points under 12.5Khz and 3 points under 1.25Khz]
-#define MODE_3_LFP_SIZE 48 // 3 points * 16 channels == 48   
-#define MODE_3_ESA_SIZE 48 // 3 points * 16 channels == 48 
+// 一个包：16 * 2 （LFP 1Khz）+ 16 * 2 （ESA 1Khz） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 3 (raster)
+#define CHUNK_SIZE  25 // [2 ms corresponding to 25 raw data points under 12.5Khz and 2 points under 1Khz]
+#define MODE_3_OUTPUT_POINTS_PER_CHANNEL 2
+#define MODE_3_LFP_SIZE (NUM_CHANNELS * MODE_3_OUTPUT_POINTS_PER_CHANNEL)
+#define MODE_3_ESA_SIZE (NUM_CHANNELS * MODE_3_OUTPUT_POINTS_PER_CHANNEL)
 #define MODE_3_SPI_TX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
 #define MODE_3_SPI_RX_BUF_SIZE (NUM_CHANNELS * CHUNK_SIZE)
 
@@ -104,7 +106,7 @@ extern u16_t MutiUnitActivityArray[(SPIKE_SAMPLE_POINT_NUM / MUA_BIN_SIZE)]; // 
 extern u16_t mode_3_m_tx_buf[MODE_3_TX_BUFFER_SIZE]; // ppi convert command; /**< TX buffer. */
 extern u16_t mode_3_m_rx_buf[2][MODE_3_RX_BUFFER_SIZE]; /*< RX buffer. double buffer >*/
 
-extern u16_t mode_3_array_t[MODE_3_SPI_RX_BUF_SIZE]; // raw data array, 30 points; 12.5Khz
+extern u16_t mode_3_array_t[MODE_3_SPI_RX_BUF_SIZE]; // raw data array, 25 points; 12.5Khz
 extern u16_t mode_3_array_lfp_t[MODE_3_LFP_SIZE]; // downsampled lfp data array
 extern u16_t mode_3_array_ESA_t[MODE_3_ESA_SIZE]; // downsampled ESA data array
 /*************spi init***************/
@@ -123,16 +125,16 @@ extern const u16_t NINE_DUMMPY[9];
 #define CLEAR 0x006A	 // not necessary to use this command
 						 // Registers configuration using write command
 #define Register0_disable 0xc280 // amp fast settle is 0  ,disable ADC AND amp to reduce power
-/************************ mode0: lfp 1khz sampling setting ************************/                         
+/************************ mode0: lfp 12.5khz sampling source setting ************************/                         
 #define lfp_Register0_enable 0xde80 // amp fast settle is 0, enable ADC
 
-#define lfp_Register1 0x2081 // VDD sense disable ,using 16 * 1 KS/s ADC 32
-#define lfp_Register2 0x2882 // MUX bias current, configuration as above 40
+#define lfp_Register1 0x0881 // VDD sense disable ,using 16 * 12.5 KS/s ADC
+#define lfp_Register2 0x2082 // MUX bias current, configuration as above
 
 #define lfp_Register3 0x0083 // diable tempS and digout
 // absmode disable + unsigned offset binary notation ADC + weak MISO + DSP high-pass filter enable(1.2Hz upper bandwidth) // 0x9884
 // #define lfp_Register4 0x8084 // disable DSP 
-#define lfp_Register4 0x9884 // DSP cutoff freq: 8 -> 0.778Hz at 1250 Sampling rate
+#define lfp_Register4 0x9b84 // DSP cutoff freq: 11 -> 0.9Hz at 12500 Sampling rate
 // Impedance check
 #define lfp_Register5 0x0085 // Impedance check control ,which is disable
 #define lfp_Register6 0x0086 // DAC output voltage ,there is 0

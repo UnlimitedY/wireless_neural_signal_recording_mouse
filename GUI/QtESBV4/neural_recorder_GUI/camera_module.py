@@ -6,6 +6,7 @@ import threading
 import multiprocessing as mp
 import queue
 import numpy as np
+import gc
 from typing import Dict, Tuple, Optional
 from path_utils import get_recordings_directory
 
@@ -72,6 +73,7 @@ def _camera_capture_worker(cmd_q: "mp.Queue", frame_q: "mp.Queue", status_q: "mp
     pending_record_start = None
     next_write_ts = None
     last_preview_ts = 0.0
+    loop_count = 0
 
     def try_put_latest_frame(payload: bytes):
         try:
@@ -137,6 +139,11 @@ def _camera_capture_worker(cmd_q: "mp.Queue", frame_q: "mp.Queue", status_q: "mp
 
     try:
         while True:
+            # Periodic GC to prevent memory fragmentation in long runs
+            loop_count += 1
+            if loop_count % 100 == 0:
+                gc.collect()
+
             try:
                 cmd = cmd_q.get(timeout=0.02)
             except queue.Empty:
@@ -490,10 +497,17 @@ class CameraModule:
         with self.lock:
             if self.frame is None:
                 return None
-            return self.frame.copy()
+            # Return reference instead of copy to save memory bandwidth
+            # Since self.frame is replaced entirely on new frame, this is safe
+            return self.frame 
 
     def _consume_frames(self):
+        loop_count = 0
         while not self._consumer_stop.is_set():
+            loop_count += 1
+            if loop_count % 100 == 0:
+                gc.collect()
+
             if self._frame_q is None:
                 time.sleep(0.05)
                 continue
@@ -577,12 +591,13 @@ class CameraModule:
         if current_file_path and os.path.exists(current_file_path):
             stats = self._get_quick_stats(current_file_path)
             if stats:
-                print(f"\nRecording finished: {os.path.basename(current_file_path)}")
-                print(f"File size: {stats['file_size_mb']:.2f} MB")
-                print(f"Duration: {stats['duration_seconds']:.1f} s")
-                print(f"Resolution: {stats['resolution']}")
-                print(f"FPS: {stats['fps']:.1f} fps")
-                print(f"Bitrate: {stats['bitrate_kbps']:.1f} kbps")
+                pass
+                # print(f"\nRecording finished: {os.path.basename(current_file_path)}")
+                # print(f"File size: {stats['file_size_mb']:.2f} MB")
+                # print(f"Duration: {stats['duration_seconds']:.1f} s")
+                # print(f"Resolution: {stats['resolution']}")
+                # print(f"FPS: {stats['fps']:.1f} fps")
+                # print(f"Bitrate: {stats['bitrate_kbps']:.1f} kbps")
         return True
     
     def _get_quick_stats(self, file_path: str) -> Dict:

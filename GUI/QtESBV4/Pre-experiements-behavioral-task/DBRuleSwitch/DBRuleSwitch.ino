@@ -44,7 +44,7 @@ extern TrialResult trial_res;
 extern volatile bool smartFinished; // Has the system exited the matrix (final state)?
 extern volatile bool smartRunning;  // 1 if state matrix is running
 extern byte smartFlag[5];
-
+extern unsigned int SMARTCurrentTrialNum;
 // noise
 const byte noisePin = 3;
 byte LowBit;
@@ -166,7 +166,7 @@ int timed_reward_count = 0;
 int EL_Favor = 2; // 2 no favor; 0 favor
 int CatchTrialProb = 5; // use a small number of trials as catch trials: baseline trial no sample cue
 int BaselineTrialFlag = 0; // 0 no catch trial; 1 catch trials
-
+int CurrentState_Last = 0;
 byte pause_signal_PC = 0;
 byte tare_flag = 1;
 byte tare_length = 0;
@@ -187,15 +187,16 @@ float S1Feat[2] = {-1.0, 1.0};
 float S2Feat[5] = {-1.0, -0.5, 0.0, 0.5, 1.0};
 /********** Communication ***********/
 char packetBuffer[255];      // buffer to hold incoming packet
-char outBuffer[1000];        // buffer to hold outcoming packet,UDP max 1472
+char outBuffer[2048];        // buffer to hold outcoming packet,UDP max 1472
 int cage_id = 101;
 char task_name[40];
 
  /********** Time alignment DAC parameter ***********/
-const float    FREQ        = 5000.0f;                  // 2 kHz
+const float    FREQ        = 5000.0f;                  // 5 kHz
 const float    FS          = AUDIO_SAMPLE_RATE_EXACT;  // ≈ 44.1 kHz
 const int      SEG_SAMPLES = 44;                       // 1 ms ≈ 44 样本（0.998 ms）
-const int16_t  AMP         = 32766;                    // 全幅
+const int16_t  AMP         = 32766/3;                    // 全幅,用来调节 发射脉冲的强度，其中/3 能保证波形完整，使用全幅 几乎为方波，但交流有效值最大
+const int16_t  offset         = 32766 - AMP;                    
 const int16_t  zero_voltage         = -32768;  
 /****************************************************************************************************/
 /********************************************** Setup() *********************************************/
@@ -217,7 +218,7 @@ void setup()
   float dphi = 2.0f * M_PI * FREQ / FS;
   float phi  = 0.0f;
   for (int i = 0; i < SEG_SAMPLES; ++i) {
-    seg_sine[i] = (int16_t)(AMP * sinf(phi));
+    seg_sine[i] = (int16_t)(AMP * sinf(phi) - offset);
     phi += dphi;
   }
  
@@ -295,6 +296,7 @@ void setup()
 
   // read parameters from SD Card to override S
   read_SD_para_S();
+  SMARTCurrentTrialNum = S.currTrialNum; // for alignment trialIndex
   // write an artificial event to mark the restart of Arduino board
   Ev.events_num = 0;
   Ev.events_id[Ev.events_num] = 1; // restart;
@@ -330,6 +332,7 @@ void loop()
       // in case SD card was removed and re-insert, need re-initilization
       SD.begin(chipSelect);
       read_SD_para_S();
+      SMARTCurrentTrialNum = S.currTrialNum;
       // free reward to fill the lickport tube
       free_reward(30);
     }
@@ -339,7 +342,8 @@ void loop()
       smartFlag[3] = false;
       digitalWrite(ledPin, HIGH);
       S.currTrialNum++;
-
+      SMARTCurrentTrialNum = S.currTrialNum;
+      
       UpdateTrialOutcome();  // including white noise (if error) and inter-trial interval
       write_SD_trial_info(); // log trial info and event to SD
       SendTrialInfo2PC();    // send trial info to PC through Serial
@@ -370,7 +374,8 @@ void loop()
     // cap reinit
     if (smartFlag[2] == 1)
     {
-      smart.reinitCap(2); // 注意： 在运行这个重启 cap的时候必须保证cap 传感器没有被调用；否则会在初始化过程中调用cap导致错误；所以必须要setLicksDetectionEnabled 为0的时候去更新
+      // 注意，这里cap会经常出现问题，可能需要重新上电才能修好
+      smart.reinitCap(2); // 注意： 在运行这个重启 cap的时候必须保证cap 传感器没有被调用；否则会在初始化过程中调用cap导致错误；所以必须要setLicksDetectionEnabled 为0的时候去更新 // 3ms
       smart.setLicksDetectionEnabled(1);
       smartFlag[2] = 0;
     }
@@ -385,22 +390,42 @@ void loop()
     if(smartFlag[1]){
       // Trial block end: inactive
       TrialBlockOnset = 1;
+      smartFlag[1] = 0;
       analogWrite(9, S.high_light_intensity);
-      }else{// actived
-        analogWrite(9, 0);
       }
     
+    // if(CurrentState != CurrentState_Last){
+    //   CurrentState_Last = CurrentState;
+    //   Serial.print("M: CurrentState: ");
+    //   Serial.println(CurrentState);
+    // }
+
     // Trial init led feedback
     if (millis() - last_update_time > 10){
+      
       last_update_time = millis();
-      if(digitalRead(gpSMART_DI_Lines[0]) == 0 && smartFlag[4] == 0){ // holding the port
-        analogWrite(5, S.low_light_intensity);
-        analogWrite(20, S.low_light_intensity);
+      if(smartFlag[4] == 0){
+        //  no in inavailable period
+        if(digitalRead(gpSMART_DI_Lines[0]) == 0){ // holding the port
+          analogWrite(5, S.low_light_intensity);
+          analogWrite(20, S.low_light_intensity);
+        }
+        else{
+          analogWrite(5, 0);
+          analogWrite(20, 0);
+        }
       }
-      else{
+      else if(smartFlag[0] == 1){
+        analogWrite(5, S.high_light_intensity);
+        analogWrite(20, S.high_light_intensity);
+      }else{
         analogWrite(5, 0);
         analogWrite(20, 0);
       }
+
+      // if(TrialBlockOnset == 1){
+      //   smart.TimeAlignmentShutDown(); 
+      // }
     } 
 
     if (millis() - last_reward_time > 3 * 3600000)
@@ -464,7 +489,7 @@ void loop()
     switch (commandByte)
     {
     case 'T':                                   // system test
-    if (smartFlag[1] == 1) // Inactive output
+    if (TrialBlockOnset == 1) // Inactive output
       {
         Teensy3Clock.set(atoi(&packetBuffer[1])); // str2int
       // if the state machine is not running , then align the time between HABITS and wireless recorder
@@ -571,7 +596,7 @@ void construct_matrix_and_Run()
   OutputAction GreenLightOutput = {"PWM3", S.high_light_intensity};          // Green light...
   OutputAction BlueLightOutputBackground = {"PWM4", S.low_light_intensity};  // Blue light Background...
   OutputAction RedLightOutputBackground = {"PWM2", S.low_light_intensity};   // red light Background...
-  OutputAction GreenLightOutputBackground = {"PWM3", S.low_light_intensity}; // Green light Background...
+  OutputAction GreenLightOutputBackground = {"PWM3", 10}; // Green light Background...
 
   // light intensity
   OutputAction LeftLightOutputH = {"PWM1", S.high_light_intensity};  // High left light intensity
@@ -584,27 +609,28 @@ void construct_matrix_and_Run()
   switch (S.currProtocolIndex)
   {  // no earlylick punishment
   // Habitation 学习触发 中间水嘴来开启一个 trial free reward(100% 有free reward：随机出现在左右);   
-  // trigger-fixation-period（100ms -> 500ms）+ sample period (100 -> 500ms) + delay period(10~200ms randomly) + Cue(100ms, 3KHz): 
+  // trigger-fixation-period（100ms）+ sample period (500ms) + delay period(10~200ms randomly) + Cue(100ms, 3KHz): 
   // 5 steps (100% free reward, [Earlylick < 20 advanced])
   
-  // DelayPeriod 10 ms; S.PreCueDelayPeriod 10 ms ; 如果连续三个trial是 EL， 下一个trial 只需要EL inhibit 第一个 block delay
-  case 0: // 10 ms + 10ms sample period; EL timeout: 2s  // 10 ms EL Inhibitation
-  case 1: // 10 ms + 100ms EL timeout: Beta 3s  // overal 10 + (50 + 50, Onset Trials) + 6 + 10 + 100 + 10 = 136 ms (236 ms in the onset)
-  case 2: // 50 ms + 200ms EL timeout: Beta 4s  // 236 + 40 + 100 == 276 ms
-  case 3: // 100 ms + 400ms EL timeout: Beta 5s  // 276 + 50 + 200 == 526 ms
+  //; S.PreCueDelayPeriod 10 ms ; 如果连续三个trial是 EL， 下一个trial 只需要EL inhibit 第一个 block delay
+  case 0: // 100 ms + 500ms sample period;  without Earlylick Inhibition
+  case 1: // 100 ms + 500ms EL timeout: Beta 3s 
+  case 2: // 100 ms + 500ms EL timeout: Beta 4s 
+  case 3: // 100 ms + 500ms EL timeout: Beta 5s 
   // Pre-Ex: DelayPeriod 50~100 ms S.PreCueDelayPeriod 100 ms
-  case 4: // 200 ms + 500ms EL timeout: Beta 6s  // 526 + 100 + 100 + 100 + 100 = 926 ms
+  case 4: // 100 ms + 500ms EL timeout: Beta 6s  
   {   
     S.TimeOut = exponent(S.currProtocolIndex+2, 2 ,9);
     
     if(S.currProtocolIndex < 4){
       S.DelayPeriod = 10;
       S.PreCueDelayPeriod = 10;
-      S.reward_middle = 100 - S.currProtocolIndex * 20;
+      S.reward_middle = 100 - S.currProtocolIndex * 20; // free reward
       
       if(S.currProtocolIndex == 0){
         EL_Favor = 0;
         S.TimeOut = 2000;
+        S.TrialBlockInitPeriod = 10;
        }   
     }else{
       S.DelayPeriod = int(random(50, 100));
@@ -613,6 +639,7 @@ void construct_matrix_and_Run()
     }
     
     float reward_dur = S.reward_left;
+    
 
     OutputAction SampleOutput; // top buzzer
     OutputAction RewardOutput;
@@ -622,6 +649,7 @@ void construct_matrix_and_Run()
     String ActionAfterDelay;
     String TrialBeignState;
     String TrialBlockOnsetEL;
+    String CapInitReturn;
 
     // 根据 currstimu 来决定 sample output stimu1 为 freq low -1 high 1 ； stimu2 spatial left -1 right 1
     if(currStimu[0] == -1){ // left orientation
@@ -673,7 +701,7 @@ void construct_matrix_and_Run()
     case 1: // left choice ; 3khz 
     {
       LeftLickAction = "Reward";
-      RightLickAction = "AnswerPeriod"; 
+      RightLickAction = "AnswerPeriod";  
   
       RewardOutput = LeftWaterOutput;
       reward_dur = S.reward_left;
@@ -681,7 +709,7 @@ void construct_matrix_and_Run()
       break;
     case 2: // right choice ; 12khz
     {
-      LeftLickAction = "AnswerPeriod"; 
+      LeftLickAction = "AnswerPeriod";  
       RightLickAction = "Reward";
 
       RewardOutput = RightWaterOutput;
@@ -703,16 +731,18 @@ void construct_matrix_and_Run()
    if(TrialBlockOnset){// trial block onset
     TrialBeignState = "NeuralReader";
     TrialBlockOnsetEL = "TrialBlockEnd";
+    CapInitReturn = "TrialBlockEnd";
     TrialBlockOnset = 0;
    }else{ // within one trial block
     TrialBeignState = "TrialStart";
     TrialBlockOnsetEL = "ReturnInitFixation";
+    CapInitReturn = "Fixed_ITI";
    }
   
 
     /*******************************************************State Machine HABITS******************************************************************    */   
     StateTransition TrialBlockDelay_Cond[2] = {{"Tup", TrialBeignState}, {"DI1Rising" ,TrialBlockOnsetEL}}; 
-    StateTransition ReturnInitFixation_Cond[4] = {{"Tup", "EarlyLickAborted"}, {"DI1Falling" ,"TrialBlockDelay"}, {"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}}; 
+    StateTransition ReturnInitFixation_Cond[4] = {{"Tup", CapInitReturn}, {"DI1Falling" ,"TrialBlockDelay"}, {"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}}; 
     StateTransition NeuralReader_Cond[1] = {{"Tup", "CapReinit"}}; 
     StateTransition CapReinit_Cond[1] = {{"Tup", "TrialStart"}}; 
     StateTransition TrialStart_Cond[1] = {{"Tup", "PreCueDelayPeriod"}}; 
@@ -721,7 +751,7 @@ void construct_matrix_and_Run()
     StateTransition DelayPeriod_Cond[3]   = {{"Tup", ActionAfterDelay} ,{"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}};
     StateTransition TrialEnd_Cond[2] = {{"Tup", "TrialBlockEnd"} ,{"DI1Falling" ,"exit"}};
     StateTransition GiveFreeDrop_Cond[1] = {{"Tup", "Cue"}};
-    StateTransition AnswerPeriod_Cond[3] = {{"Lick1In", LeftLickAction}, {"Lick2In", RightLickAction}, {"Tup", "NoResponse"}};
+    StateTransition AnswerPeriod_Cond[3] = {{"Lick1In", LeftLickAction}, {"Lick2In", RightLickAction}, {"Tup", "NoResponse"}}; 
     StateTransition Reward_Cond[1] = {{"Tup", "RewardConsumption"}};
     StateTransition Tup_Exit_Cond[1] = {{"Tup", "Fixed_ITI"}};
     StateTransition ErrorTrial_Cond[1] = {{"Tup", "exit"}};
@@ -739,35 +769,36 @@ void construct_matrix_and_Run()
     OutputAction Reward_Output[1] = {RewardOutput};
     OutputAction FreeReward_Output[1] = {RewardOutput};
     OutputAction NoOutput[0] = {};
+    OutputAction ReturnInitOutput[1] = {CapDisableOutput};
     OutputAction ErrorOutput[2] = {NoiseOutput, Inavailable_Output};
     OutputAction EndCue_Output[1]      = {CueOutput};
-    OutputAction TrialEnd_Output[1] = {smartFinish_Output};
+    OutputAction TrialEnd_Output[2] = {smartFinish_Output, GreenLightOutputBackground};
     OutputAction TrialBlockEnd_Output[3] = {Inactive_Output, LFPRecordingOutput, CapDisableOutput};
     OutputAction TimeOut_Output[1] = {Inavailable_Output};
 
     gpSMART_State states[21] = {};
     // visual flash states and conditions
     states[0] = smart.CreateState("TrialBlockDelay",                 S.TrialBlockInitPeriod,    2,                  TrialBlockDelay_Cond,         0,           NoOutput); // remove trial initiation without engagement
-    states[20] = smart.CreateState("ReturnInitFixation",             100,                       4,                  ReturnInitFixation_Cond,      0,           NoOutput); // avoid mis-detection of fixed action or give mice the second chance to re-fix.
+    states[20] = smart.CreateState("ReturnInitFixation",             5000,                      4,                  ReturnInitFixation_Cond,      0,           NoOutput); // avoid mis-detection of fixed action or give mice the second chance to re-fix.
     states[18] = smart.CreateState("NeuralReader",                   50,                        1,                  NeuralReader_Cond,            1,           NeuralReader_Output); 
-    states[19] = smart.CreateState("CapReinit",                      50,                        1,                  CapReinit_Cond,               1,           CapReinit_Output); 
+    states[19] = smart.CreateState("CapReinit",                      50,                        1,                  CapReinit_Cond,               1,           CapReinit_Output);  // 1s enough time for mode switch
     
     states[15] = smart.CreateState("TrialStart",                     6,                         1,                  TrialStart_Cond,              1,           TrialStart_Output); // for time alignment by adding 2Khz signal marker
     states[3] = smart.CreateState("PreCueDelayPeriod",               S.PreCueDelayPeriod,       1+EL_Favor,         PreCueDelayPeriod_Cond,       0,           NoOutput); // for islating the noised alignment signal
-    states[11] = smart.CreateState("EarlyLickAborted",               100              ,         1,                  EarlyLickAborted_Cond,        1,           ErrorOutput); 
+    states[11] = smart.CreateState("EarlyLickAborted",               200              ,         1,                  EarlyLickAborted_Cond,        2,           ErrorOutput); 
     states[13] = smart.CreateState("SampleCue",                      S.SamplePeriod,            1+EL_Favor   ,      SampleCue_Cond,               1,           Sample_Output); // 100 ~ 500ms
     states[1] = smart.CreateState("DelayPeriod",                     S.DelayPeriod,             1+EL_Favor,         DelayPeriod_Cond,             0,           NoOutput);
     states[14] = smart.CreateState("Cue",                            100,                       1    ,              Cue_Cond,                     1,           EndCue_Output); 
     states[4] = smart.CreateState("GiveFreeDrop",                    S.reward_middle,           1,                  GiveFreeDrop_Cond,            1,           FreeReward_Output);
-    states[5] = smart.CreateState("AnswerPeriod",                    S.AnswerPeriod,            3,                  AnswerPeriod_Cond,            1,           TimeOut_Output);
+    states[5] = smart.CreateState("AnswerPeriod",                    S.AnswerPeriod,            3,                  AnswerPeriod_Cond,            1,           TimeOut_Output); 
     states[6] = smart.CreateState("Reward",                          reward_dur,                1,                  Reward_Cond,                  1,           Reward_Output);
     states[7] = smart.CreateState("RewardConsumption",               S.ConsumptionPeriod,       1,                  Tup_Exit_Cond,                1,           TimeOut_Output);
     states[8] = smart.CreateState("NoResponse",                      10                        ,1,                  NoResponse_Cond,              0,           NoOutput);  // enter to the Trial end
     states[9] = smart.CreateState("ErrorTrial",                      500,                       1,                  ErrorTrial_Cond,              2,           ErrorOutput); // not used
     states[10] = smart.CreateState("TimeOutEL",                      S.TimeOut,                 1,                  Tup_Exit_Cond,                1,           TimeOut_Output);
-    states[17] = smart.CreateState("Fixed_ITI",                      500       ,                3,                  Fixed_ITI_Cond,               1,           TimeOut_Output); // Fixed 1000 ms ITI without licking
+    states[17] = smart.CreateState("Fixed_ITI",                      100       ,                3,                  Fixed_ITI_Cond,               1,           TimeOut_Output); // Fixed 1000 ms ITI without licking
     states[12] = smart.CreateState("Fixed_ITI_Return",               100,                       1,                  Fixed_ITI_Return_Cond,        1,           TimeOut_Output);
-    states[2] = smart.CreateState("TrialEnd",                        10000,                     2,                  TrialEnd_Cond,                1,           TrialEnd_Output); // waiting next self-initated trial
+    states[2] = smart.CreateState("TrialEnd",                        10000,                     2,                  TrialEnd_Cond,                2,           TrialEnd_Output); // waiting next self-initated trial
     
     states[16] = smart.CreateState("TrialBlockEnd",                 12 * 60 * 60 * 1000,        2,                  TrialBlockEnd_Cond,           3,           TrialBlockEnd_Output);  // TrialBlock end + Serial output for Mode1 open
     
@@ -788,7 +819,7 @@ void construct_matrix_and_Run()
   }
   break;
   // Loc antibias for training full trial structure
-  case 5: // trigger-fixation-period(200ms）+ sample period (500ms fixation) + delay period(200ms) + Cue(100ms): no free reward;  punishment 3000~8000 ms
+  case 5: // trigger-fixation-period(100ms）+ sample period (500ms fixation) + delay period(200ms) + Cue(100ms): no free reward;  punishment 3000~8000 ms
   case 6: // retention period: delay period (50~200 ms randomly); random trial type with model fitting
   // Freq antibias
   case 7: // freq
@@ -798,7 +829,12 @@ void construct_matrix_and_Run()
   case 10: // reversal retention random trial type with model fitting delay period (50~200ms randomly)
   {       
     S.DelayPeriod = int(random(50, 200));
-    S.TimeOut = exponent(5 ,3 ,8);
+    if(S.currProtocolIndex % 2 == 0){ // 6,8,10 ; retention period
+      S.TimeOut = exponent(6 ,5 ,8);
+    }else{
+      S.TimeOut = exponent(4 ,2 ,6);
+    }
+    
 
     OutputAction SampleOutput; // top buzzer
     OutputAction RewardOutput;
@@ -807,6 +843,8 @@ void construct_matrix_and_Run()
     String RightLickAction;
     String TrialBeignState;
     String TrialBlockOnsetEL;
+    String ActionAfterDelay;
+    String CapInitReturn;
 
     float reward_dur = S.reward_left;
 
@@ -889,23 +927,37 @@ void construct_matrix_and_Run()
     if(TrialBlockOnset){// trial block onset
       TrialBeignState = "NeuralReader";
       TrialBlockOnsetEL = "TrialBlockEnd";
+      CapInitReturn = "TrialBlockEnd";
       TrialBlockOnset = 0;
     }else{ // within one trial block
       TrialBeignState = "TrialStart";
       TrialBlockOnsetEL = "ReturnInitFixation";
+      CapInitReturn = "Fixed_ITI";
+    }
+    // 连续 做错3次，下一次的 trial 增加 free reward 作为提示
+    if ((TrialType == 1 && S.GaveFreeReward.flag_L_water == 1) || (TrialType == 2 && S.GaveFreeReward.flag_R_water == 1)) {
+      ActionAfterDelay = "GiveFreeDrop";
+      if (TrialType == 1) {
+        S.GaveFreeReward.flag_L_water = 0;
+      } else {
+        S.GaveFreeReward.flag_R_water = 0;
+      }
+    } else {
+      ActionAfterDelay = "Cue";
     }
     
     StateTransition TrialBlockDelay_Cond[2] = {{"Tup",TrialBeignState},{"DI1Rising", TrialBlockOnsetEL}}; 
-    StateTransition ReturnInitFixation_Cond[4] = {{"Tup", "EarlyLickAborted"}, {"DI1Falling" ,"TrialBlockDelay"}, {"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}}; 
+    StateTransition ReturnInitFixation_Cond[4] = {{"Tup", CapInitReturn}, {"DI1Falling" ,"TrialBlockDelay"}, {"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}}; 
     StateTransition NeuralReader_Cond[1] = {{"Tup", "CapReinit"}}; 
     StateTransition CapReinit_Cond[1] = {{"Tup", "TrialStart"}}; 
     StateTransition PreCueDelayPeriod_Cond[3] = {{"Tup", "SampleCue"} ,{"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}};
     StateTransition TrialStart_Cond[1] = {{"Tup", "PreCueDelayPeriod"}}; 
-    StateTransition DelayPeriod_Cond[3]   = {{"Tup", "Cue"},{"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}};
+    StateTransition DelayPeriod_Cond[3]   = {{"Tup", ActionAfterDelay},{"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}};
     StateTransition TrialEnd_Cond[2] = {{"Tup", "TrialBlockEnd"} ,{"DI1Falling" ,"exit"}};
-    StateTransition GiveFreeDrop_Cond[1] = {{"Tup", "DelayPeriod"}};
+    StateTransition GiveFreeDrop_Cond[1] = {{"Tup", "Cue"}};
     StateTransition SampleCue_Cond[3]   = {{"Tup",  "DelayPeriod"},{"Lick1In", "EarlyLickAborted"}, {"Lick2In", "EarlyLickAborted"}};
-    StateTransition AnswerPeriod_Cond[3] = {{"Lick1In", LeftLickAction}, {"Lick2In", RightLickAction}, {"Tup", "NoResponse"}};
+    StateTransition AnswerPeriod_Cond[3] = {{"Lick1In", LeftLickAction}, {"Lick2In", RightLickAction}, {"Tup", "NoResponse"}}; // 这里因为cap的损坏改为： left action
+    // 为 触发一下光电； right 为不触发
     StateTransition Reward_Cond[1] = {{"Tup", "RewardConsumption"}};
     StateTransition Tup_Exit_Cond[1] = {{"Tup", "Fixed_ITI"}};
     StateTransition ErrorTrial_Cond[1] = {{"Tup", "TimeOut"}};
@@ -926,28 +978,29 @@ void construct_matrix_and_Run()
     OutputAction Reward_Output[1] = {RewardOutput};
     OutputAction FreeReward_Output[1] = {RewardOutput};
     OutputAction NoOutput[0] = {};
+    OutputAction ReturnInitOutput[1] = {CapDisableOutput};
     OutputAction ErrorOutput[2] = {NoiseOutput, Inavailable_Output};
     OutputAction EndCue_Output[1]      = {CueOutput};
     OutputAction TrialStart_Output[1] = {TimeAlignmentOutput};
-    OutputAction TrialEnd_Output[1] = {smartFinish_Output};
+    OutputAction TrialEnd_Output[2] = {smartFinish_Output, GreenLightOutputBackground};
     OutputAction TrialBlockEnd_Output[3] = {Inactive_Output, LFPRecordingOutput, CapDisableOutput};
     OutputAction TimeOut_Output[1] = {Inavailable_Output};
 
     gpSMART_State states[26] = {};
     // visual flash states and conditions
     states[0] = smart.CreateState("TrialBlockDelay",                 S.TrialBlockInitPeriod,    2,                  TrialBlockDelay_Cond,         0,           NoOutput); // 
-    states[25] = smart.CreateState("ReturnInitFixation",             100,                       4,                  ReturnInitFixation_Cond,      0,           NoOutput); // avoid mis-detection of fixed action or give mice the second chance to re-fix.
+    states[25] = smart.CreateState("ReturnInitFixation",             5000,                      4,                  ReturnInitFixation_Cond,      0,           NoOutput); // avoid mis-detection of fixed action or give mice the second chance to re-fix.
     states[23] = smart.CreateState("NeuralReader",                   50,                        1,                  NeuralReader_Cond,            1,           NeuralReader_Output); 
     states[24] = smart.CreateState("CapReinit",                      50,                        1,                  CapReinit_Cond,               1,           CapReinit_Output); 
 
     states[20] = smart.CreateState("TrialStart",                     6,                         1,                  TrialStart_Cond,              1,           TrialStart_Output); // msec
     states[3] = smart.CreateState("PreCueDelayPeriod",               100,                       1+EL_Favor        , PreCueDelayPeriod_Cond,       0,           NoOutput);
-    states[11] = smart.CreateState("EarlyLickAborted",               100              ,         1,                  EarlyLickAborted_Cond,        1,           ErrorOutput); 
+    states[11] = smart.CreateState("EarlyLickAborted",               200              ,         1,                  EarlyLickAborted_Cond,        2,           ErrorOutput); 
     states[16] = smart.CreateState("SampleCue",                      S.SamplePeriod,            1+EL_Favor        , SampleCue_Cond,               1,           Sample_Output); // 500ms
     states[1] = smart.CreateState("DelayPeriod",                     S.DelayPeriod,             1+EL_Favor ,        DelayPeriod_Cond,             0,           NoOutput);
     states[18] = smart.CreateState("Cue",                            100,                       1    ,              Cue_Cond,                     1,           EndCue_Output);
-    states[4] = smart.CreateState("GiveFreeDrop",                    reward_dur,                1,                  GiveFreeDrop_Cond,            1,           FreeReward_Output); // not used
-    states[5] = smart.CreateState("AnswerPeriod",                    S.AnswerPeriod,            3,                  AnswerPeriod_Cond,            1,           TimeOut_Output);
+    states[4] = smart.CreateState("GiveFreeDrop",                    S.reward_middle,           1,                  GiveFreeDrop_Cond,            1,           FreeReward_Output); // not used
+    states[5] = smart.CreateState("AnswerPeriod",                    S.AnswerPeriod,            3,                  AnswerPeriod_Cond,            1,           TimeOut_Output); 
     states[6] = smart.CreateState("Reward",                          reward_dur,                1,                  Reward_Cond,                  1,           Reward_Output);
     states[7] = smart.CreateState("RewardConsumption",               S.ConsumptionPeriod,       1,                  Tup_StopLicking_Cond,         1,           TimeOut_Output);
     states[14] = smart.CreateState("StopLicking",                    S.StopLickingPeriod,       3,                  StopLicking_Cond,             1,           TimeOut_Output);
@@ -957,9 +1010,9 @@ void construct_matrix_and_Run()
     states[17] = smart.CreateState("ErrorTest",                      10,                        1,                  ErrorTest_Cond,               0,           NoOutput);  // not used
     states[13] = smart.CreateState("TimeOut",                        S.TimeOut+S.extra_TimeOut, 1,                  Tup_Exit_Cond,                1,           TimeOut_Output);
     states[10] = smart.CreateState("TimeOutEL",                      exponent(6 ,5 ,9),         1,                  Tup_Exit_Cond,                1,           TimeOut_Output);
-    states[22] = smart.CreateState("Fixed_ITI",                      1000       ,               3,                  Fixed_ITI_Cond,               1,           TimeOut_Output); // Fixed 1000 ms ITI without licking
+    states[22] = smart.CreateState("Fixed_ITI",                      100       ,                3,                  Fixed_ITI_Cond,               1,           TimeOut_Output); // Fixed 1000 ms ITI without licking
     states[12] = smart.CreateState("Fixed_ITI_Return",               100,                       1,                  Fixed_ITI_Return_Cond,        1,           TimeOut_Output);
-    states[2] = smart.CreateState("TrialEnd",                        10000            ,         2,                  TrialEnd_Cond,                1,           TrialEnd_Output);
+    states[2] = smart.CreateState("TrialEnd",                        10000            ,         2,                  TrialEnd_Cond,                2,           TrialEnd_Output);
 
     states[21] = smart.CreateState("TrialBlockEnd",                  12 * 60 * 60 * 1000,       2,                  TrialBlockEnd_Cond,           3,           TrialBlockEnd_Output);  // TrialBlock end + Serial output for Mode1 open
     // Predefine State sequence.
@@ -993,7 +1046,7 @@ void UpdateTrialOutcome()
     trial_res.stateVisited[]:   the states visited in last trail
   */
 
-  TrialOutcome = 3; // 0 no-response; 1 correct; 2 error; 3 others
+  TrialOutcome = 4; // 0 no-response; 1 correct; 2 error; 3 el; 4 others
   int ErrorState = 9;
 
   for (int i = 0; i < trial_res.nVisited; i++)
@@ -1033,6 +1086,7 @@ void UpdateTrialOutcome()
       if (trial_res.stateVisited[i] == 11)
       { // earlylick delay
         is_earlylick = 1;
+        TrialOutcome = 3;
         break;
       }
     }
@@ -1137,15 +1191,15 @@ void autoChangeProtocol()
   switch (S.currProtocolIndex)
   {
   case 0: // habitation 1
-   if (S.currProtocolTrials > 100 && EarlyLick100 < 20)
+   if (S.currProtocolTrials > 500 && EarlyLick100 < 20)
 //      if (S.currProtocolTrials > 10)
     {                        
       S.currProtocolIndex = 1; // habitation 2
       S.currProtocolTrials = 0;
       S.currProtocolPerf = 0;
 
-      S.TrialBlockInitPeriod = 10;
-      S.SamplePeriod = 100;
+      S.TrialBlockInitPeriod = 100;
+      S.SamplePeriod = 500;
       S.TimeOut = 3000;
       S.AnswerPeriod = 10000;
       S.ConsumptionPeriod = 750;
@@ -1163,8 +1217,8 @@ void autoChangeProtocol()
       S.currProtocolTrials = 0;
       S.currProtocolPerf = 0;
 
-      S.TrialBlockInitPeriod = 50;
-      S.SamplePeriod = 200;
+      S.TrialBlockInitPeriod = 100;
+      S.SamplePeriod = 500;
       S.TimeOut = 4000;
       S.AnswerPeriod = 10000;
       S.ConsumptionPeriod = 750;
@@ -1183,7 +1237,7 @@ void autoChangeProtocol()
       S.currProtocolPerf = 0;
 
       S.TrialBlockInitPeriod = 100;
-      S.SamplePeriod = 400;
+      S.SamplePeriod = 500;
       S.TimeOut = 5000;
       S.AnswerPeriod = 10000;
       S.ConsumptionPeriod = 750;
@@ -1201,7 +1255,7 @@ void autoChangeProtocol()
     S.currProtocolTrials = 0;
     S.currProtocolPerf = 0;
 
-    S.TrialBlockInitPeriod = 200;
+    S.TrialBlockInitPeriod = 100;
     S.SamplePeriod = 500;
     S.TimeOut = 6000;
     S.AnswerPeriod = 10000;
@@ -1219,8 +1273,9 @@ void autoChangeProtocol()
     S.currProtocolIndex = 5; // Early training loc
     S.currProtocolTrials = 0;
     S.currProtocolPerf = 0;
+    S.reward_middle = S.reward_left;
 
-    S.TrialBlockInitPeriod = 200;
+    S.TrialBlockInitPeriod = 100;
     S.SamplePeriod = 500;
     S.DelayPeriod = 200;
     S.AnswerPeriod = 5000;
@@ -1242,8 +1297,9 @@ void autoChangeProtocol()
       S.currProtocolPerf = 0;
       S.currProtocolIndex = 6; // retention
       S.rule = 0; 
+      S.reward_middle = S.reward_left;
 
-      S.TrialBlockInitPeriod = 200;
+      S.TrialBlockInitPeriod = 100;
       S.SamplePeriod = 500;
       S.DelayPeriod = 200;
       S.AnswerPeriod = 5000;
@@ -1261,8 +1317,9 @@ void autoChangeProtocol()
     S.currProtocolPerf = 0;
     S.currProtocolIndex = 7;
     S.rule = 1;  // aud freq
+    S.reward_middle = S.reward_left;
 
-    S.TrialBlockInitPeriod = 200;
+    S.TrialBlockInitPeriod = 100;
     S.SamplePeriod = 500;
     S.DelayPeriod = 200;
     S.AnswerPeriod = 5000;
@@ -1284,8 +1341,9 @@ void autoChangeProtocol()
       S.currProtocolIndex = 8;
       S.currProtocolPerf = 0;
       S.currProtocolTrials = 0;
+      S.reward_middle = S.reward_left;
 
-      S.TrialBlockInitPeriod = 200;
+      S.TrialBlockInitPeriod = 100;
       S.SamplePeriod = 500;
       S.DelayPeriod = 200;
       S.AnswerPeriod = 5000;
@@ -1303,8 +1361,9 @@ void autoChangeProtocol()
       S.currProtocolPerf = 0;
       S.currProtocolIndex = 9;
       S.rule = 2;  // aud freq reversal
+      S.reward_middle = S.reward_left;
 
-      S.TrialBlockInitPeriod = 200;
+      S.TrialBlockInitPeriod = 100;
       S.SamplePeriod = 500;
       S.DelayPeriod = 200;
       S.AnswerPeriod = 5000;
@@ -1328,8 +1387,9 @@ void autoChangeProtocol()
       S.currProtocolIndex = 10; // retention reversal aud freq
       S.currProtocolPerf = 0;
       S.currProtocolTrials = 0;
+      S.reward_middle = S.reward_left;
 
-      S.TrialBlockInitPeriod = 200;
+      S.TrialBlockInitPeriod = 100;
       S.SamplePeriod = 500;
       S.DelayPeriod = 200;
       S.AnswerPeriod = 5000;
@@ -1382,19 +1442,40 @@ void trialSelection() { //
     case 0: // random 
     {
       currStimu[0] = S1Feat[int(random(0 ,2))];
-      currStimu[1] = S2Feat[int(random(0 ,5))];
+      // 实现注释逻辑：0和4（即首尾，原注释为5但越界）概率70%，其余30%
+      int rand_prob = int(random(0, 100));
+      int s2_idx;
+      if (rand_prob < 70) {
+        // 70% 概率在 0 和 4 中随机选择
+        s2_idx = (int(random(0, 2)) == 0) ? 0 : 4;
+      } else {
+        // 30% 概率在 1, 2, 3 中随机选择
+        s2_idx = int(random(1, 4));
+      }
+      currStimu[1] = S2Feat[s2_idx];
+
       rule_define(S.rule ,currStimu[0] ,currStimu[1]);
     }
     break;
     case 1: // antibias 75% copy the easiest trial which is error at the last 1 trial
     {
       int antibias_randn = int(random(0 ,100));
-      if(S.OutcomeHistory[RECORD_TRIALS - 1] != 1 && S.SampleTypeHistory[RECORD_TRIALS - 1] == 2 && antibias_randn < 60) //TODO 60% easiest trial type
+      if(S.OutcomeHistory[RECORD_TRIALS - 1] != 1 && S.SampleTypeHistory[RECORD_TRIALS - 1] == 2 && antibias_randn < 90) //TODO 90% easiest trial type
       {
         // keep last params of trial
       }else{
         currStimu[0] = S1Feat[int(random(0 ,2))];
-        currStimu[1] = S2Feat[int(random(0 ,5))];
+          // 实现注释逻辑：0和4（即首尾，原注释为5但越界）概率70%，其余30%
+        int rand_prob = int(random(0, 100));
+        int s2_idx;
+        if (rand_prob < 70) {
+          // 70% 概率在 0 和 4 中随机选择
+          s2_idx = (int(random(0, 2)) == 0) ? 0 : 4;
+        } else {
+          // 30% 概率在 1, 2, 3 中随机选择
+          s2_idx = int(random(1, 4));
+        }
+        currStimu[1] = S2Feat[s2_idx];
       }
       rule_define(S.rule ,currStimu[0] ,currStimu[1]);
     }
@@ -1911,8 +1992,30 @@ int write_SD_trial_info()
       dataFile.print(" ");
       dataFile.print(trial_res.stateTimeStamps[i]);
     }
-
     dataFile.println();
+
+    // Serial prinnt
+    String TrialInfo_str = "Trial:";
+    TrialInfo_str += String(S.currTrialNum);
+    TrialInfo_str += " ";
+    TrialInfo_str += String(TrialOutcome);
+    TrialInfo_str += " ";
+    TrialInfo_str += String(trial_res.nVisited);      
+
+    for (int i = 0; i < trial_res.nVisited; i++)
+    {
+      TrialInfo_str += " ";
+      TrialInfo_str += String(trial_res.stateVisited[i]);
+      TrialInfo_str += " ";
+      TrialInfo_str += String(trial_res.stateTimeStamps[i]);
+    }
+    TrialInfo_str += " ";
+    if(TrialInfo_str.length() > 2000){
+      Serial.println("E: TrialInfo_str is too long.");
+    }else{
+      TrialInfo_str.toCharArray(outBuffer, TrialInfo_str.length());
+      Serial.println(outBuffer);
+    }
 
   }
   else
@@ -1929,7 +2032,6 @@ int write_SD_trial_info()
   {
     dataFile.print(S.currTrialNum);
     dataFile.print(" ");
-
     dataFile.print(trial_res.nEvent);
     for (int i = 0; i < trial_res.nEvent; i++)
     {
@@ -1939,6 +2041,25 @@ int write_SD_trial_info()
       dataFile.print(trial_res.eventTimeStamps[i]);
     }
     dataFile.println();
+    // Serial output
+    String TrialInfo_str = "Tevent:";
+    TrialInfo_str += String(S.currTrialNum);
+    TrialInfo_str += " ";
+    TrialInfo_str += String(trial_res.nEvent);
+    for (int i = 0; i < trial_res.nEvent; i++)
+    {
+      TrialInfo_str += " ";
+      TrialInfo_str += String(trial_res.EventID[i]);
+      TrialInfo_str += " ";
+      TrialInfo_str += String(trial_res.eventTimeStamps[i]);
+    }
+    TrialInfo_str += " "; 
+    if(TrialInfo_str.length() > 2000){
+      Serial.println("E: TrialInfo_str is too long.");
+    }else{
+      TrialInfo_str.toCharArray(outBuffer, TrialInfo_str.length());
+      Serial.println(outBuffer);
+    }
   }
   else
   {

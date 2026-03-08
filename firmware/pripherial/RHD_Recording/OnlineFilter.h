@@ -21,21 +21,24 @@
 #define FLOAT32_MIN_SAFE -1e6f 
 #define Filter_scale 1.0f // 给所有输出filer的值在转为uV后乘以 0.1
 
-#define ORIGINAL_FS 12500    // Original sampling rate 10kHz
-#define TARGET_FS 1250       // Target sampling rate after low-pass filtering
-#define DECIMATION_FACTOR 10 // 10kHz -> 1kHz
+#define ORIGINAL_FS 12500    // Original sampling rate 12.5kHz
+#define TARGET_FS 1000       // Target sampling rate after low-pass filtering
+#define RESAMPLE_NUMERATOR 2
+#define RESAMPLE_DENOMINATOR 25
+#define MODE3_DECIMATED_SAMPLES_PER_CHANNEL ((CHUNK_SIZE * RESAMPLE_NUMERATOR) / RESAMPLE_DENOMINATOR)
 #define MAX_FILTER_ORDER 4   // Maximum filter order
+#define MAX_SAMPLES_PER_CHANNEL SPIKE_SAMPLE_POINT_NUM
 
 // Spike detection parameters
 #define MIN_ISI 10           // Minimum inter-spike interval (samples)
 #define SPIKE_WINDOW 3       // Spike detection window size
-#define MUA_BIN_SIZE_MODE_3 10      // MUA binning size (samples)
+#define MUA_BIN_SIZE_MODE_3 8      // MUA binning size (samples)
 
 #define IIR_ORDER_lowpass_LFP 2          // IIR filter order for LFP
 #define IIR_ORDER_lowpass_ESA 1          // IIR filter order for ESA
 #define IIR_ORDER_highpass_ESA 1         // IIR filter order for ESA
 
-#define IIR_CUTOFF_lowpass_LFP 250.0f          // IIR filter cutoff 相位延迟 最大1ms （1250 Hz 采样）
+#define IIR_CUTOFF_lowpass_LFP 250.0f          // IIR filter cutoff 相位延迟 最大1ms （12.5kHz 输入采样）
 #define IIR_CUTOFF_lowpass_ESA 12.0f          // IIR filter cutoff
 #define IIR_CUTOFF_highpass_ESA 250.0f          // IIR filter cutoff
 
@@ -47,6 +50,10 @@
 #define RHD2132_ADC_REF_VOLTAGE    RHD2132_ADC_REF_VOLTAGE_v / RHD2132_ADC_GAIN * 1000000.f
 
 extern float scale_factor; // uv
+#define MODE3_ESA_REREF_DISABLED 0
+#define MODE3_ESA_REREF_FAST_MEDIAN 1
+#define MODE3_ESA_REREF_SAFE_MEDIAN 2
+extern u8_t mode3_esa_reref_enable;
 
 // Filter configuration structure
 typedef struct {
@@ -92,14 +99,14 @@ extern ChannelFilterState channel_states[NUM_CHANNELS] ARM_ALIGN;
 extern float32_t input_buffer[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
 
 extern float32_t lowpass_buffer_LFP[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
-extern float32_t decimated_buffer_LFP[NUM_CHANNELS * (CHUNK_SIZE/DECIMATION_FACTOR)] ARM_ALIGN;
+extern float32_t decimated_buffer_LFP[NUM_CHANNELS * MODE3_DECIMATED_SAMPLES_PER_CHANNEL] ARM_ALIGN;
 
 extern float32_t lowpass_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
 extern float32_t highpass_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
 extern float32_t rectified_buffer_ESA[NUM_CHANNELS * CHUNK_SIZE] ARM_ALIGN;
-extern float32_t decimated_buffer_ESA[NUM_CHANNELS * (CHUNK_SIZE/DECIMATION_FACTOR)] ARM_ALIGN;
+extern float32_t decimated_buffer_ESA[NUM_CHANNELS * MODE3_DECIMATED_SAMPLES_PER_CHANNEL] ARM_ALIGN;
 
-extern uint16_t mua_output[CHUNK_SIZE/MUA_BIN_SIZE_MODE_3] ARM_ALIGN; // [10 raw data points per raster bin: ~0.8ms -> 3 bins per 30 points]
+extern uint16_t mua_output[CHUNK_SIZE/MUA_BIN_SIZE_MODE_3] ARM_ALIGN; // mode3 raster bins
 
 /******************************************************************************************* */
 // Function prototypes
@@ -159,14 +166,13 @@ arm_status init_highpass_filter_ESA(uint8_t order, float32_t cutoff_freq, float3
 void set_spike_threshold(uint8_t channel, float32_t threshold);
 
 /**
- * Decimate signal by integer factor using ARM CMSIS DSP
+ * Resample 12.5kHz signal to 1kHz
  * @param input: Input signal
- * @param output: Output decimated signal
+ * @param output: Output resampled signal
  * @param input_length: Input signal length
- * @param factor: Decimation factor
  * @return: Output signal length
  */
-static inline uint32_t decimate_signal_arm(const float32_t *input, float32_t *output, uint32_t input_length, uint32_t factor);
+static inline uint32_t resample_signal_12500_to_1000(const float32_t *input, float32_t *output, uint32_t input_length);
 
 /**
  * ARM CMSIS DSP optimized spike detection with MUA extraction
@@ -181,18 +187,21 @@ static inline void detect_spikes_and_extract_mua(const float32_t *signal, uint16
 /**
  * Main neural signal processing function for 12.5kHz input
  * Generates three outputs:
- * 1. LFP: 2nd order IIR lowpass (250Hz) + 10x decimation -> 1.25kHz
- * 2. ESA: 1st order IIR highpass (250Hz) -> rectify -> 1st order IIR lowpass (12Hz) + 10x decimation -> 1.25kHz  
+ * 1. LFP: 2nd order IIR lowpass (250Hz) + resample -> 1kHz
+ * 2. ESA: 1st order IIR highpass (250Hz) -> rectify -> 1st order IIR lowpass (12Hz) + resample -> 1kHz  
  * 3. MUA: 1st order IIR highpass (250Hz) -> spike detection -> MUA bins
  * @param input_data: Input neural data [channels x samples] at 12.5kHz
  * @param samples_per_channel: Number of samples per channel
- * @param lfp_output: Output LFP data (decimated to 1.25kHz)
- * @param esa_output: Output ESA data (decimated to 1.25kHz)
+ * @param lfp_output: Output LFP data (resampled to 1kHz)
+ * @param esa_output: Output ESA data (resampled to 1kHz)
  * @param mua_data: Output MUA data (spike events in bins)
  * @return: Number of output samples after decimation
  */
 uint32_t process_neural_signals_mode3(const float32_t *input_data, uint32_t samples_per_channel,
                                      float32_t *lfp_output, uint16_t *mua_data, float32_t *esa_output);
+
+uint32_t process_lfp_lowpass_decimate(const float32_t *input_data, uint32_t samples_per_channel,
+                                     float32_t *lfp_output);
 
 // ADC converter int16 -> float
 void convert_rhd2132_samples(u16_t* adc_data, float_t* float_data, uint32_t num_samples, float32_t filter_scale, bool inttofloat);

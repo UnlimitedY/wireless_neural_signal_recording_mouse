@@ -51,13 +51,19 @@ class SerialWorker(QThread):
             self.running = True
             
             while self.running:
-                if self.serial_connection.in_waiting > 0:
-                    try:
-                        data = self.serial_connection.readline().decode('utf-8').strip()
-                        if data:
-                            self.data_received.emit(data)
-                    except UnicodeDecodeError:
-                        continue
+                try:
+                    if self.serial_connection.in_waiting > 0:
+                        try:
+                            data = self.serial_connection.readline().decode('utf-8').strip()
+                            if data:
+                                self.data_received.emit(data)
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                         time.sleep(0.01) # Sleep 10ms when no data
+                except OSError:
+                     # Handle device disconnection
+                     break
                         
         except Exception as e:
             self.error_occurred.emit(f"Serial connection error: {str(e)}")
@@ -97,8 +103,70 @@ class TrialDataManager:
         # 按日期索引的数据，用于快速查找
         self._trials_by_date = defaultdict(list)
         
+        # Event data storage (last 50 trials)
+        self.event_data = deque(maxlen=50)
+        self.state_data = deque(maxlen=50) # Store state data
+
         # Mode switches storage
         self.mode_switches = [] # List of dicts: {'start': datetime, 'end': datetime}
+
+    def add_event_data(self, trial_num, events):
+        """Add event data for a trial"""
+        # Check if we already have state data for this trial
+        state_info = None
+        for item in self.state_data:
+            if item['trial_num'] == trial_num:
+                state_info = item
+                break
+        
+        self.event_data.append({
+            'trial_num': trial_num,
+            'events': events,
+            'state_info': state_info # Link state info if available
+        })
+
+    def add_state_data(self, trial_num, outcome, states):
+        """Add state data for a trial"""
+        state_entry = {
+            'trial_num': trial_num,
+            'outcome': outcome,
+            'states': states
+        }
+        self.state_data.append(state_entry)
+        
+        # Try to link with existing event data
+        for item in self.event_data:
+            if item['trial_num'] == trial_num:
+                item['state_info'] = state_entry
+                break
+
+    def get_event_data(self):
+        """Get recent event data (with linked state info)"""
+        # Ensure latest links
+        events = list(self.event_data)
+        states = list(self.state_data)
+        
+        # Create a lookup for states
+        state_map = {s['trial_num']: s for s in states}
+        
+        # Merge
+        result = []
+        for e in events:
+            # Prefer fresh lookup over stored link
+            s = state_map.get(e['trial_num'])
+            if s:
+                e['state_info'] = s
+            result.append(e)
+            
+        return result
+
+    def get_state_data(self):
+        """Get recent state data"""
+        return list(self.state_data)
+
+    def get_event_data_raw(self):
+        """Get recent event data (raw)"""
+        return list(self.event_data)
 
     def add_mode_switch(self, switch_data: Dict[str, datetime]):
         """Add a mode switch interval"""
@@ -283,7 +351,7 @@ class TrialDataManager:
 class OptimizedHabitsPanel(QWidget):
     """优化的Habits面板"""
     Neural_recorder_command = pyqtSignal(str)
-    TrialStarted = pyqtSignal() # Signal emitted when trial starts ('C' received)
+    TrialStarted = pyqtSignal(int) # Signal emitted when trial starts ('C:number' received)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -296,6 +364,8 @@ class OptimizedHabitsPanel(QWidget):
         # 串口通信
         self.serial_worker = None
         self.serial_data_log = []
+        self.expecting_tevent_data = False
+        self.expecting_trial_state_data = False
         
         # 当前试验编号跟踪
         self.current_trial_num = 0
@@ -644,6 +714,12 @@ class OptimizedHabitsPanel(QWidget):
         charts_main_layout.setSpacing(10)
         charts_main_layout.setContentsMargins(0, 0, 0, 0)
         
+        # Top Charts Container (Horizontal)
+        top_charts_container = QWidget()
+        top_charts_layout = QHBoxLayout(top_charts_container)
+        top_charts_layout.setContentsMargins(0, 0, 0, 0)
+        top_charts_layout.setSpacing(10)
+
         # Performance图表
         perf_group = QGroupBox("Performance Chart")
         perf_layout = QVBoxLayout(perf_group)
@@ -696,6 +772,46 @@ class OptimizedHabitsPanel(QWidget):
         )
         
         perf_layout.addWidget(self.plot_widget)
+
+        # Event Raster Chart
+        event_group = QGroupBox("Event Raster (Last 50 Trials)")
+        event_layout = QVBoxLayout(event_group)
+        event_layout.setContentsMargins(5, 5, 5, 5)
+        
+        self.event_plot_widget = pg.PlotWidget()
+        self.event_plot_widget.setBackground('#0B0F14')
+        self.event_plot_widget.setLabel('left', 'Trial Number')
+        self.event_plot_widget.setLabel('bottom', 'Time (ms)')
+        self.event_plot_widget.setTitle('Trial Events')
+        self.event_plot_widget.showGrid(True, True, alpha=0.3)
+        
+        # Initialize scatter items
+        self.event_scatters = {}
+        # 0: Start (Green), 1: End (Red), 8: Lick Left (Cyan), 10: Lick Right (Magenta)
+        event_styles = {
+            0: {'color': (0, 255, 0), 'symbol': 'o', 'name': 'Start'},
+            1: {'color': (255, 0, 0), 'symbol': 'x', 'name': 'End'},
+            8: {'color': (0, 255, 255), 'symbol': 't', 'name': 'Lick L'},
+            10: {'color': (255, 0, 255), 'symbol': 't', 'name': 'Lick R'}
+        }
+        
+        for eid, style in event_styles.items():
+            scatter = pg.ScatterPlotItem(
+                size=8, 
+                pen=pg.mkPen(None), 
+                brush=pg.mkBrush(*style['color']),
+                symbol=style['symbol'],
+                name=style['name']
+            )
+            self.event_plot_widget.addItem(scatter)
+            self.event_scatters[eid] = scatter
+            
+        self.event_plot_widget.addLegend()
+        event_layout.addWidget(self.event_plot_widget)
+
+        # Add to horizontal layout
+        top_charts_layout.addWidget(perf_group, 1)
+        top_charts_layout.addWidget(event_group, 1)
         
         # 24h Trials图表
         trials_24h_group = QGroupBox("24h Trials Chart")
@@ -717,7 +833,7 @@ class OptimizedHabitsPanel(QWidget):
         trials_24h_layout.addWidget(self.trials_24h_widget)
         
         # 将两个图表添加到垂直布局中
-        charts_main_layout.addWidget(perf_group, 1)  # 占用 1 份空间
+        charts_main_layout.addWidget(top_charts_container, 1)  # 占用 1 份空间
         charts_main_layout.addWidget(trials_24h_group, 1)  # 占用 1 份空间
         
         # 下半部分：串口数据显示
@@ -877,15 +993,31 @@ class OptimizedHabitsPanel(QWidget):
             
     def handle_serial_data(self, data: str):
         """处理接收到的串口数据"""
-        # Check for Trial Start signal 'C'
-        if data.strip() == 'C':
-            self.TrialStarted.emit()
-            # Log it but maybe don't clutter the display if it's too frequent?
-            # User said it represents trial start, so it's an event.
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.serial_data_display.append(f"[{timestamp}] Trial Start (C)")
+        # Check for Trial Start signal 'C:number'
+        if data.strip().startswith('C:'):
+            try:
+                trial_num_str = data.strip()[2:]
+                trial_num = int(trial_num_str)
+                self.TrialStarted.emit(trial_num)
+                
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                self.serial_data_display.append(f"[{timestamp}] Trial Start (C:{trial_num})")
+            except ValueError:
+                # Log parsing error if number is invalid
+                pass
+            return
+        
+        # Check for Tevent header
+        if data.strip().startswith("Tevent:"):
+            self.parse_tevent_data(data)
             return
 
+        # Check for Trial: header (Space separated)
+        if data.strip().startswith("Trial:"): 
+            self.parse_trial_state_data(data)
+            return
+
+        ## Trial mode switch signal
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {data}"
         # 用于处理时间对齐事件，用来自动化switch 在mode0 和mode3 之间
@@ -924,7 +1056,6 @@ class OptimizedHabitsPanel(QWidget):
                 
         # 保存原始数据到文件
         # self.save_data_to_file(data)
-        
         # 解析数据
         self.parse_received_data(data)
         
@@ -1033,6 +1164,122 @@ class OptimizedHabitsPanel(QWidget):
         except Exception as e:
             self.add_message(f"Data parsing error: {str(e)}")
             
+    def parse_tevent_data(self, data: str):
+        """Parse Tevent data line"""
+        try:
+            parts = data.strip().split()
+            if len(parts) < 2:
+                return
+                
+            trial_num = int(parts[0][7:])
+            n_events = int(parts[1])
+            
+            events = []
+            idx = 2
+            # Each event has 2 values: ID and Timestamp
+            
+            while idx + 1 < len(parts) and len(events) < n_events:
+                eid = int(parts[idx])
+                timestamp = int(parts[idx+1])
+                events.append({'id': eid, 'time': timestamp})
+                idx += 2
+            self.data_manager.add_event_data(trial_num, events)
+            self.update_event_chart()
+            
+        except ValueError as e:
+            print(f"Error parsing Tevent: {e}")
+            pass
+
+    def parse_trial_state_data(self, data: str):
+        """Parse Trial State data line
+        Format: Trial: <trialNum> <outcome> <nVisited> <state> <time> ...
+        """
+        try:
+            # Remove "Trial:" prefix
+            content = data[6:].strip()
+            parts = content.split()
+            if len(parts) < 3:
+                return
+                
+            trial_num = int(parts[0])
+            outcome = int(parts[1])
+            n_visited = int(parts[2])
+            
+            states = []
+            idx = 3
+            # Each state has 2 values: ID and Timestamp
+            
+            while idx + 1 < len(parts) and len(states) < n_visited:
+                state_id = int(parts[idx])
+                timestamp = int(parts[idx+1])
+                states.append({'id': state_id, 'time': timestamp})
+                idx += 2
+                
+            self.data_manager.add_state_data(trial_num, outcome, states)
+            self.update_event_chart()
+            
+        except ValueError as e:
+            # self.add_message(f"Error parsing Trial State: {e}")
+            pass
+
+    def update_event_chart(self):
+        """Update event raster chart (Events Only)"""
+        # Clear existing items except legend
+        self.event_plot_widget.clear()
+        self.event_plot_widget.addLegend()
+        
+        # Re-add scatter items
+        # 0: Start (Green), 1: End (Red), 8: Lick Left (Cyan), 10: Lick Right (Magenta)
+        
+        event_styles = {
+            0: {'color': (0, 255, 0), 'symbol': 'o', 'name': 'Start', 'size': 8},
+            1: {'color': (255, 0, 0), 'symbol': 'x', 'name': 'End', 'size': 8},
+            8: {'color': (0, 255, 255), 'symbol': 't', 'name': 'Lick L', 'size': 8},
+            10: {'color': (255, 0, 255), 'symbol': 't', 'name': 'Lick R', 'size': 8}
+        }
+        
+        event_data = self.data_manager.get_event_data()
+        
+        # Prepare data for scatter plots
+        scatter_points = defaultdict(list) # Key: ID (event)
+        
+        min_trial = float('inf')
+        max_trial = float('-inf')
+        
+        for trial in event_data:
+            t_num = trial['trial_num']
+            min_trial = min(min_trial, t_num)
+            max_trial = max(max_trial, t_num)
+            
+            # Events
+            if 'events' in trial:
+                for event in trial['events']:
+                    eid = event['id']
+                    if eid in event_styles:
+                        scatter_points[eid].append({
+                            'pos': (event['time'], t_num),
+                            'data': 1,
+                            'brush': pg.mkBrush(*event_styles[eid]['color']),
+                            'pen': pg.mkPen(None),
+                            'size': event_styles[eid]['size'],
+                            'symbol': event_styles[eid]['symbol']
+                        })
+
+        # Draw Scatter Items
+        for eid, style in event_styles.items():
+            points = scatter_points.get(eid, [])
+            if points:
+                # Extract data for setData
+                spots = [{'pos': p['pos'], 'data': 1, 'brush': p['brush'], 'pen': p['pen'], 'size': p['size'], 'symbol': p['symbol']} for p in points]
+                scatter = pg.ScatterPlotItem(name=style['name'])
+                scatter.addPoints(spots)
+                # scatter.setName(style['name']) # Removed due to AttributeError
+                self.event_plot_widget.addItem(scatter)
+                
+        # Update Y range to follow trials
+        if min_trial != float('inf'):
+            self.event_plot_widget.setYRange(max(0, max_trial - 50), max_trial + 2)
+
     def update_performance_chart(self):
         """更新性能图表"""
         # 使用数据管理器的高效方法获取性能数据
@@ -1547,7 +1794,7 @@ class OptimizedHabitsPanel(QWidget):
                     y=trial_types[correct_mask],
                     pen=pg.mkPen(None),
                     brush=pg.mkBrush(0, 255, 0, 180),  # 绿色
-                    size=12,
+                    size=15,
                     symbol='o'
                 )
                 self.trials_24h_widget.addItem(scatter_correct)
@@ -1560,7 +1807,7 @@ class OptimizedHabitsPanel(QWidget):
                     y=trial_types[error_mask],
                     pen=pg.mkPen(255, 0, 0, 255),  # 红色
                     brush=pg.mkBrush(None),
-                    size=16,
+                    size=15,
                     symbol='x'
                 )
                 self.trials_24h_widget.addItem(scatter_error)
@@ -1573,7 +1820,7 @@ class OptimizedHabitsPanel(QWidget):
                     y=trial_types[early_lick_mask],
                     pen=pg.mkPen(255, 0, 255, 255),  # 紫色
                     brush=pg.mkBrush(255, 0, 255, 200),
-                    size=18,
+                    size=6,
                     symbol='d'
                 )
                 self.trials_24h_widget.addItem(scatter_early_lick)
@@ -1590,6 +1837,19 @@ class OptimizedHabitsPanel(QWidget):
                     symbol='o'
                 )
                 self.trials_24h_widget.addItem(scatter_no_response)
+            
+             # other trials (outcome=4) - 白色方块
+            other_mask = outcomes == 4
+            if np.any(other_mask):
+                scatter_other = pg.ScatterPlotItem(
+                    x=times[other_mask], 
+                    y=trial_types[other_mask],
+                    pen=pg.mkPen(255, 255, 255, 255),  # 白色
+                    brush=pg.mkBrush(None),
+                    size=12,
+                    symbol='s'
+                )
+                self.trials_24h_widget.addItem(scatter_other)
             
             # 设置坐标轴
             self.trials_24h_widget.setLabel('left', 'Trial Type')
