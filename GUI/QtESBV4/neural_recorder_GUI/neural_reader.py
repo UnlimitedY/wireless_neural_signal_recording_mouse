@@ -73,21 +73,17 @@ def save_process_main(queue):
         start_timestamp_ms = float(end_timestamp_ms) - float(duration_ms)
         return datetime.datetime.fromtimestamp(start_timestamp_ms / 1000.0)
 
-    def _finalize_miss_packets(raw_dict: dict, max_interval: float, ts_key: str = "TimeStamp"):
+    def _finalize_miss_packets(raw_dict: dict, max_interval: float, ts_key: str = "TimeStamp", index_key: str = "PacketIndex", expected_step: int = 1):
         try:
-            timestamp_files = np.asarray(raw_dict.get(ts_key, []), dtype=np.float64)
-            if timestamp_files.size <= 1:
-                raw_dict["MissPacketsIndex"] = np.asarray([], dtype=np.int64)
-                raw_dict["MissPackets"] = 0
+            packet_indices = raw_dict.get(index_key, [])
+            if packet_indices is not None and len(packet_indices) > 1:
+                miss_idx, miss_num = _calc_miss_packets_from_indices(packet_indices, expected_step=expected_step)
+                raw_dict["MissPacketsIndex"] = np.asarray(miss_idx, dtype=np.int64)
+                raw_dict["MissPackets"] = float(miss_num)
                 return
-            timestamp_diff = np.diff(timestamp_files)
-            miss_packets = np.argwhere((timestamp_diff > max_interval) | (timestamp_diff <= 0)).flatten()
-            raw_dict["MissPacketsIndex"] = miss_packets
-            if miss_packets.size == 0:
-                raw_dict["MissPackets"] = 0
-                return
-            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / float(max_interval))
-            raw_dict["MissPackets"] = float(np.sum(miss_packets_num.flatten()))
+            raw_dict["MissPacketsIndex"] = np.asarray([], dtype=np.int64)
+            raw_dict["MissPackets"] = 0
+            logging.critical(f"PacketIndex unavailable in finalize miss packets: key={index_key}, size={0 if packet_indices is None else len(packet_indices)}")
         except Exception:
             raw_dict["MissPacketsIndex"] = []
             raw_dict["MissPackets"] = 0
@@ -113,7 +109,9 @@ def save_process_main(queue):
                 sensors = msg.get("sensors", {})
                 update_flags = msg.get("update_flags", [])
 
+                packet_indices = msg.get("packet_indices", [])
                 mode0_raw["TimeStamp"].extend(timestamps)
+                mode0_raw["PacketIndex"].extend(packet_indices)
                 for i in range(min(16, len(channels))):
                     mode0_raw[f"Channel_{i}"].extend(channels[i])
                 for k, v in sensors.items():
@@ -132,7 +130,9 @@ def save_process_main(queue):
                 sensors = msg.get("sensors", {})
                 update_flags = msg.get("update_flags", [])
 
+                packet_indices = msg.get("packet_indices", [])
                 mode3_raw["TimeStamp"].extend(timestamps)
+                mode3_raw["PacketIndex"].extend(packet_indices)
                 for i in range(min(16, len(lfp_channels))):
                     mode3_raw[f"Channel_{i}"].extend(lfp_channels[i])
                 for i in range(min(16, len(esa_channels))):
@@ -152,12 +152,14 @@ def save_process_main(queue):
             raw_channels = msg.get("raw_channels", [])
             raw_sizes = msg.get("raw_sizes", [])
             raw_alignment = msg.get("raw_alignment", [])
+            raw_packet_indices = msg.get("packet_indices", [])
 
             mode3_raw["Raw_data"].extend(raw_samples)
             mode3_raw["Raw_timestamp"].extend(timestamps)
             mode3_raw["Raw_channel"].extend(raw_channels)
             mode3_raw["Raw_packet_sizes"].extend(raw_sizes)
             mode3_raw["Raw_alignment"].extend(raw_alignment)
+            mode3_raw["Raw_packet_indices"].extend(raw_packet_indices)
             continue
 
         if msg_type == "flush":
@@ -172,7 +174,7 @@ def save_process_main(queue):
                 mode0_raw = get_raw_data_container()
                 mode0_sensors = get_events_data_container()
 
-                _finalize_miss_packets(raw_snapshot, float(params.get("LFP_max_interval", 5)))
+                _finalize_miss_packets(raw_snapshot, float(params.get("LFP_max_interval", 5)), index_key="PacketIndex", expected_step=1)
                 start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 4.0)
 
                 write_q.put({
@@ -196,7 +198,7 @@ def save_process_main(queue):
                 mode3_raw = get_mode3_data_container()
                 mode3_sensors = get_events_data_container()
 
-                _finalize_miss_packets(raw_snapshot, float(params.get("mode3_max_interval", 3)))
+                _finalize_miss_packets(raw_snapshot, float(params.get("mode3_max_interval", 3)), index_key="PacketIndex", expected_step=1)
                 start_time = _calc_start_time(end_timestamp, raw_snapshot.get("TimeStamp", []), 2.0)
 
                 write_q.put({
@@ -269,6 +271,8 @@ def _process_mode0_save(task):
         raw_data["TimeStamp"],
         raw_data_per_packet_channel,
         LFP_max_interval,
+        packet_indices=raw_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=-1000.0  # Explicitly pass physical min for LFP channels
     )
     lfp_labels = [f"Ch{i}" for i in range(16)]
@@ -293,6 +297,8 @@ def _process_mode0_save(task):
         raw_data["TimeStamp"],
         1,
         LFP_max_interval,
+        packet_indices=raw_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
@@ -332,6 +338,8 @@ def _process_mode3_save(task):
         esa_data["TimeStamp"],
         raw_data_per_packet_mode3,
         mode3_max_interval,
+        packet_indices=esa_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=-1000.0 # Explicitly pass physical min for LFP/ESA channels
     )
     labels = [f"Ch{i}" for i in range(16)] + [f"ESA{i}" for i in range(16)]
@@ -357,6 +365,8 @@ def _process_mode3_save(task):
         esa_data["TimeStamp"],
         1,
         mode3_max_interval,
+        packet_indices=esa_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
@@ -373,16 +383,20 @@ def _process_mode3_save(task):
     raw_sizes = esa_data.get("Raw_packet_sizes", [])
     raw_ch_list = esa_data.get("Raw_channel", [])
     raw_alignment = esa_data.get("Raw_alignment", [])
+    raw_packet_indices = esa_data.get("Raw_packet_indices", [])
     
     if len(raw_samples) > 0 and len(raw_timestamps) > 0:
         raw_filled = _interpolate_missing_packets_by_min_variable(
-            raw_samples, raw_timestamps, raw_sizes, mode3_raw_max_interval
+            raw_samples, raw_timestamps, raw_sizes, mode3_raw_max_interval,
+            packet_indices=raw_packet_indices, expected_index_step=4
         )
         ch_broadcast = _broadcast_channel_to_samples_by_variable(
-            raw_ch_list, raw_sizes, raw_timestamps, mode3_raw_max_interval, filler_value=-1000
+            raw_ch_list, raw_sizes, raw_timestamps, mode3_raw_max_interval, filler_value=-1000,
+            packet_indices=raw_packet_indices, expected_index_step=4
         )
         alignment_filled = _interpolate_missing_packets_by_min_variable(
-            raw_alignment, raw_timestamps, raw_sizes, mode3_raw_max_interval, filler_value=0
+            raw_alignment, raw_timestamps, raw_sizes, mode3_raw_max_interval, filler_value=0,
+            packet_indices=raw_packet_indices, expected_index_step=4
         )
         
         labels = ["RawData", "RawChannel", "Alignment"]
@@ -428,6 +442,8 @@ def _process_mode1_save(task):
         ap_data["Raw_timestamp"],
         90,
         Spike_max_interval,
+        packet_indices=ap_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=-1000.0 # Explicitly pass physical min for Raw channel
     )
     labels = ["Raw"]
@@ -460,6 +476,8 @@ def _process_mode1_save(task):
         ap_data["Raw_timestamp"],
         1,
         Spike_max_interval,
+        packet_indices=ap_data.get("PacketIndex", []),
+        expected_index_step=1,
         physical_mins=s_mins
     )
     sensor_fs_list = [sensor_fs] * len(sensor_channels_filled)
@@ -497,6 +515,8 @@ def _process_mode2_save(task):
             ap_lfp_data["TimeStamp"],
             30,
             mode2_max_interval,
+            packet_indices=ap_lfp_data.get("PacketIndex", []),
+            expected_index_step=1,
             physical_mins=-1000.0 # Explicitly pass physical min for AP/LFP channels
         )
         fs = [20833] * len(channels_filled)
@@ -617,7 +637,53 @@ def _safe_write_edf(filename, channel_arrays, labels, sample_rates, physical_min
 
     writer.close()
 
-def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_samples, max_interval, physical_mins=None):
+def _calc_missing_counts_from_indices(packet_indices, expected_step=1, max_missing_packets=4096):
+    if packet_indices is None:
+        return {}, 0
+    try:
+        n_packets = len(packet_indices)
+    except Exception:
+        packet_indices = list(packet_indices)
+        n_packets = len(packet_indices)
+    if n_packets <= 1:
+        return {}, 0
+    expected_step = int(expected_step) if expected_step else 1
+    if expected_step <= 0:
+        expected_step = 1
+    missing_counts = {}
+    missing_total = 0
+    for j in range(n_packets - 1):
+        try:
+            prev_idx = int(packet_indices[j]) & 0xFFFF
+            curr_idx = int(packet_indices[j + 1]) & 0xFFFF
+        except Exception:
+            continue
+        delta = (curr_idx - prev_idx) & 0xFFFF
+        if delta == 0:
+            continue
+        increments = delta // expected_step
+        if increments <= 0:
+            continue
+        if (delta % expected_step) != 0:
+            logging.critical(f"Packet index stride mismatch: prev={prev_idx}, curr={curr_idx}, delta={delta}, expected_step={expected_step}")
+        missing = max(0, increments - 1)
+        if missing > max_missing_packets:
+            logging.critical(f"Missing packet count exceeded cap: missing={missing}, cap={max_missing_packets}, prev={prev_idx}, curr={curr_idx}, step={expected_step}")
+            missing = max_missing_packets
+        if missing > 0:
+            missing_counts[j] = missing
+            missing_total += missing
+    return missing_counts, missing_total
+
+def _calc_miss_packets_from_indices(packet_indices, expected_step=1, max_missing_packets=4096):
+    missing_counts, _ = _calc_missing_counts_from_indices(packet_indices, expected_step=expected_step, max_missing_packets=max_missing_packets)
+    if not missing_counts:
+        return [], 0
+    miss_idx = sorted(missing_counts.keys())
+    miss_num = int(sum(missing_counts.values()))
+    return miss_idx, miss_num
+
+def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_samples, max_interval, physical_mins=None, packet_indices=None, expected_index_step=1):
     """Insert filler samples for detected missing packets using a fixed minimum value 0.0.
     Returns new arrays suitable for EDF writing.
     """
@@ -652,19 +718,11 @@ def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_sampl
         return [np.asarray(arr, dtype=np.float64) for arr in channel_arrays]
 
     missing_counts = {}
-    for j in range(usable_n_packets - 1):
-        try:
-            diff = float(timestamps[j+1]) - float(timestamps[j])
-        except Exception:
-            diff = 0.0
-        if diff > max_interval:
-            missing = int(np.ceil(diff / max_interval)) - 1
-        elif diff <= 0:
-            missing = 1
-        else:
-            missing = 0
-        if missing > 0:
-            missing_counts[j] = missing
+    if packet_indices is not None and len(packet_indices) >= usable_n_packets:
+        packet_indices = list(packet_indices)[:usable_n_packets]
+        missing_counts, _ = _calc_missing_counts_from_indices(packet_indices, expected_step=expected_index_step)
+    else:
+        logging.critical(f"PacketIndex unavailable for interpolation: usable_n_packets={usable_n_packets}, provided={0 if packet_indices is None else len(packet_indices)}")
 
     filled_arrays = [list() for _ in channel_arrays]
     for j in range(usable_n_packets):
@@ -681,7 +739,7 @@ def _interpolate_missing_packets_by_min(channel_arrays, timestamps, packet_sampl
 
     return [np.asarray(a, dtype=np.float64) for a in filled_arrays]
 
-def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_sizes, max_interval, filler_value=-1000):
+def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_sizes, max_interval, filler_value=-1000, packet_indices=None, expected_index_step=1):
     """Interpolate missing packets for a single-channel array where packet sizes may vary.
     - raw_array: flat list/array of samples concatenated across packets
     - timestamps: list of per-packet timestamps (ms)
@@ -707,20 +765,12 @@ def _interpolate_missing_packets_by_min_variable(raw_array, timestamps, packet_s
         chunks.append(raw[idx:idx+sz])
         idx += sz
     # Detect missing counts
-    missing_counts = {}
-    for j in range(n_packets - 1):
-        try:
-            diff = float(timestamps[j+1]) - float(timestamps[j])
-        except Exception:
-            diff = 0.0
-        if diff > max_interval:
-            missing = int(np.ceil(diff / max_interval)) - 1
-        elif diff <= 0:
-            missing = 1
-        else:
-            missing = 0
-        if missing > 0:
-            missing_counts[j] = missing
+    if packet_indices is not None and len(packet_indices) >= n_packets:
+        packet_indices = list(packet_indices)[:n_packets]
+        missing_counts, _ = _calc_missing_counts_from_indices(packet_indices, expected_step=expected_index_step)
+    else:
+        missing_counts = {}
+        logging.critical(f"PacketIndex unavailable for variable interpolation: n_packets={n_packets}, provided={0 if packet_indices is None else len(packet_indices)}")
     # Filler size: use median packet size for stability
     med_size = int(np.median(packet_sizes)) if packet_sizes else 0
     filled = []
@@ -773,7 +823,7 @@ def _build_timestamp_samples(timestamps, packet_samples, max_interval=None, inse
 
     return np.asarray(ts_samples, dtype=np.float64)
 
-def _broadcast_channel_to_samples_by_variable(channels, packet_sizes, timestamps, max_interval, filler_value=-1000):
+def _broadcast_channel_to_samples_by_variable(channels, packet_sizes, timestamps, max_interval, filler_value=-1000, packet_indices=None, expected_index_step=1):
     """Broadcast per-packet Raw_channel to per-sample array using variable packet sizes.
     - channels: list of per-packet channel indices
     - packet_sizes: list of per-packet sample counts
@@ -791,20 +841,12 @@ def _broadcast_channel_to_samples_by_variable(channels, packet_sizes, timestamps
     if not packet_sizes or len(packet_sizes) != n_packets:
         packet_sizes = [1] * n_packets
     # Detect missing packet gaps
-    missing_counts = {}
-    for j in range(n_packets - 1):
-        try:
-            diff = float(timestamps[j+1]) - float(timestamps[j])
-        except Exception:
-            diff = 0.0
-        if diff > max_interval:
-            missing = int(np.ceil(diff / max_interval)) - 1
-        elif diff <= 0:
-            missing = 1
-        else:
-            missing = 0
-        if missing > 0:
-            missing_counts[j] = missing
+    if packet_indices is not None and len(packet_indices) >= n_packets:
+        packet_indices = list(packet_indices)[:n_packets]
+        missing_counts, _ = _calc_missing_counts_from_indices(packet_indices, expected_step=expected_index_step)
+    else:
+        missing_counts = {}
+        logging.critical(f"PacketIndex unavailable for channel broadcast interpolation: n_packets={n_packets}, provided={0 if packet_indices is None else len(packet_indices)}")
     med_size = int(np.median(packet_sizes)) if packet_sizes else 0
     out = []
     for j in range(n_packets):
@@ -842,6 +884,7 @@ def get_raw_data_container(): # LFP raw data
         "Channel_15":[],
        
         "TimeStamp":[] , # real PC time after time calibration every packets (ms)
+        "PacketIndex":[],
         
         "MissPackets":0, 
         "MissPacketsIndex":[]
@@ -885,6 +928,7 @@ def get_mode3_data_container(): # LFP raw data
         "ESA_Channel_15":[],
        
         "TimeStamp":[] , # real PC time after time calibration every packets (ms)
+        "PacketIndex":[],
 
         "AP_timestamp":[] , # raster
         "Electrode":[] , # firing electrode
@@ -893,6 +937,7 @@ def get_mode3_data_container(): # LFP raw data
         "Raw_data":[], # 12.5Khz data
         "Raw_channel":[], # firing channel
         "Raw_timestamp":[], # raw timestamp
+        "Raw_packet_indices":[],
         "Raw_packet_sizes":[], # per-packet raw sample count for interpolation
         "Raw_alignment": [], # Alignment signal
         
@@ -932,6 +977,7 @@ def spike_data_container(): # mode 1; raster 16 channels + 1 channel raw data
         "Raw_data":[], # 20Khz data
         "Raw_channel":[], # firing channel
         "Raw_timestamp":[], # raw timestamp
+        "PacketIndex":[],
 
         "SpikeThreshold":[],
 
@@ -948,6 +994,15 @@ def spike_data_container(): # mode 1; raster 16 channels + 1 channel raw data
 ############################################################
 def swap16Hex(str):
     return str[2:4] + str[0:2]
+
+def _decode_mode2_channel_word(channel_word):
+    word = int(swap16Hex(channel_word), 16)
+    return [
+        (word >> 0) & 0xF,
+        (word >> 4) & 0xF,
+        (word >> 8) & 0xF,
+        (word >> 12) & 0xF,
+    ]
 
 def my_gaussian_filter1d(seq, sigma=50 ,truncate=4.0 ,order=0): 
     """allow NaN elements
@@ -1101,6 +1156,7 @@ class SerialPort(QThread):
         """ neural signal buffer """
         # mode 0 & 3
         self.lfptimestamp_GUI = []
+        self.lfppacketindex_GUI = []
         self.lfpdata_GUI = [[] for _ in range(16)]
         self.ESAdata_GUI = [[] for _ in range(16)]
         self.alignment_GUI = [] # Alignment signal buffer
@@ -1110,10 +1166,12 @@ class SerialPort(QThread):
         ####### test modes
         # spike mode 1
         self.spiketimestamp_GUI = []
+        self.spikepacketindex_GUI = []
         self.spikedata_GUI = [] # only 1 channel
         self.spikerasterdata_GUI = [[] for _ in range(16)] 
         # spike mode 2
         self.spiketimestamp_mode2_GUI = []
+        self.spikepacketindex_mode2_GUI = []
         self.spikechannel_mode2_GUI = []
         self.spikedata_mode2_GUI = [[] for _ in range(16)] # 16 channel with 4 active channels
 
@@ -1201,11 +1259,11 @@ class SerialPort(QThread):
         
         self.overflowSignal = [0, 0] # last and current
 
-        self.LFP_max_interval = 5 # the maximum interval between raw data packets: 1khz lfp 32 channels: 3
+        self.LFP_max_interval = 5 # the maximum interval between raw data packets: 1khz 
         self.Spike_max_interval = 6 # same as above but for the minimum value
         self.mode2_max_interval = 2
         self.mode3_max_interval = 3
-        self.mode3_raw_max_interval = 15
+        self.mode3_raw_max_interval = 14
 
         """ IMU & LC data recording """
         self.sensor_update_flag = None
@@ -1214,6 +1272,9 @@ class SerialPort(QThread):
         
         # Pre-allocate sensor buffer to avoid repeated creation
         self.temp_sensor_data_buffer = np.zeros(9, dtype=np.float32)
+        self._transition_grace_until_ms = 0.0
+        self._transition_pending_reset = False
+        self._save_grace_until_ms = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
 
     def port_open(self):
         """ seiral ports opening """
@@ -1244,9 +1305,67 @@ class SerialPort(QThread):
         except Exception:
             return
 
+    def begin_mode_transition(self, grace_ms=150):
+        now_ms = time.time() * 1000.0
+        grace_ms = max(0.0, float(grace_ms))
+        self._transition_grace_until_ms = now_ms + grace_ms
+        self._transition_pending_reset = True
+        if self.save_file_lfp_flag:
+            self._save_grace_until_ms[0] = max(self._save_grace_until_ms[0], self._transition_grace_until_ms)
+        if self.save_file_mode1_flag:
+            self._save_grace_until_ms[1] = max(self._save_grace_until_ms[1], self._transition_grace_until_ms)
+        if self.save_file_mode2_flag:
+            self._save_grace_until_ms[2] = max(self._save_grace_until_ms[2], self._transition_grace_until_ms)
+        if self.save_file_mode3_flag:
+            self._save_grace_until_ms[3] = max(self._save_grace_until_ms[3], self._transition_grace_until_ms)
+
+    def _is_in_transition_grace(self):
+        return (time.time() * 1000.0) < float(self._transition_grace_until_ms)
+
+    def _is_in_save_grace(self, mode):
+        return (time.time() * 1000.0) < float(self._save_grace_until_ms.get(int(mode), 0.0))
+
+    def _should_save_mode(self, mode):
+        mode = int(mode)
+        if mode == 0:
+            return self.save_file_lfp_flag or self._is_in_save_grace(0)
+        if mode == 1:
+            return self.save_file_mode1_flag or self._is_in_save_grace(1)
+        if mode == 2:
+            return self.save_file_mode2_flag or self._is_in_save_grace(2)
+        if mode == 3:
+            return self.save_file_mode3_flag or self._is_in_save_grace(3)
+        return False
+
+    def _reset_runtime_gui_buffers(self):
+        self.lfptimestamp_GUI.clear()
+        self.lfppacketindex_GUI.clear()
+        for ch in self.lfpdata_GUI:
+            ch.clear()
+        for ch in self.ESAdata_GUI:
+            ch.clear()
+        self.spiketimestamp_GUI.clear()
+        self.spikepacketindex_GUI.clear()
+        self.spikedata_GUI.clear()
+        for ch in self.spikerasterdata_GUI:
+            ch.clear()
+        self.spiketimestamp_mode2_GUI.clear()
+        self.spikepacketindex_mode2_GUI.clear()
+        for ch in self.spikedata_mode2_GUI:
+            ch.clear()
+        for ch in self.sensordata_GUI:
+            ch.clear()
+        self.alignment_GUI.clear()
+
+    def _finalize_transition_if_needed(self):
+        if self._transition_pending_reset and (not self._is_in_transition_grace()):
+            self._reset_runtime_gui_buffers()
+            self._transition_pending_reset = False
+
     def _mode0_pending_init(self):
         self._mode0_pending = {
             "timestamps": [],
+            "packet_indices": [],
             "channels": [[] for _ in range(16)],
             "update_flags": [],
             "sensors": {k: [] for k in self._sensor_keys_no_flag},
@@ -1256,6 +1375,7 @@ class SerialPort(QThread):
     def _mode3_pending_init(self):
         self._mode3_pending = {
             "timestamps": [],
+            "packet_indices": [],
             "lfp_channels": [[] for _ in range(16)],
             "esa_channels": [[] for _ in range(16)],
             "update_flags": [],
@@ -1266,6 +1386,7 @@ class SerialPort(QThread):
     def _mode3_raw_pending_init(self):
         self._mode3_raw_pending = {
             "timestamps": [],
+            "packet_indices": [],
             "raw_samples": [],
             "raw_channels": [],
             "raw_sizes": [],
@@ -1273,10 +1394,11 @@ class SerialPort(QThread):
         }
         self._mode3_raw_pending_packets = 0
 
-    def _save_mode0_append(self, timestamp, ch16_lists, sensor_lists_9, update_flag):
+    def _save_mode0_append(self, timestamp, packet_index, ch16_lists, sensor_lists_9, update_flag):
         if self._mode0_pending is None:
             self._mode0_pending_init()
         self._mode0_pending["timestamps"].append(timestamp)
+        self._mode0_pending["packet_indices"].append(int(packet_index) & 0xFFFF)
         for i in range(16):
             self._mode0_pending["channels"][i].extend(ch16_lists[i])
         for i, k in enumerate(self._sensor_keys_no_flag):
@@ -1293,6 +1415,7 @@ class SerialPort(QThread):
             "type": "append_chunk",
             "mode": 0,
             "timestamps": self._mode0_pending["timestamps"],
+            "packet_indices": self._mode0_pending["packet_indices"],
             "channels": self._mode0_pending["channels"],
             "sensors": self._mode0_pending["sensors"],
             "update_flags": self._mode0_pending["update_flags"],
@@ -1300,10 +1423,11 @@ class SerialPort(QThread):
         self._save_put(msg)
         self._mode0_pending_init()
 
-    def _save_mode3_append(self, timestamp, lfp16_lists, esa16_lists, sensor_lists_9, update_flag):
+    def _save_mode3_append(self, timestamp, packet_index, lfp16_lists, esa16_lists, sensor_lists_9, update_flag):
         if self._mode3_pending is None:
             self._mode3_pending_init()
         self._mode3_pending["timestamps"].append(timestamp)
+        self._mode3_pending["packet_indices"].append(int(packet_index) & 0xFFFF)
         for i in range(16):
             self._mode3_pending["lfp_channels"][i].extend(lfp16_lists[i])
             self._mode3_pending["esa_channels"][i].extend(esa16_lists[i])
@@ -1322,6 +1446,7 @@ class SerialPort(QThread):
             "type": "append_chunk",
             "mode": 3,
             "timestamps": self._mode3_pending["timestamps"],
+            "packet_indices": self._mode3_pending["packet_indices"],
             "lfp_channels": self._mode3_pending["lfp_channels"],
             "esa_channels": self._mode3_pending["esa_channels"],
             "sensors": self._mode3_pending["sensors"],
@@ -1330,10 +1455,11 @@ class SerialPort(QThread):
         self._save_put(msg)
         self._mode3_pending_init()
 
-    def _save_mode3_raw_append(self, timestamp, raw_samples, raw_channel, raw_alignment=None):
+    def _save_mode3_raw_append(self, timestamp, packet_index, raw_samples, raw_channel, raw_alignment=None):
         if self._mode3_raw_pending is None:
             self._mode3_raw_pending_init()
         self._mode3_raw_pending["timestamps"].append(timestamp)
+        self._mode3_raw_pending["packet_indices"].append(int(packet_index) & 0xFFFF)
         self._mode3_raw_pending["raw_samples"].extend(raw_samples)
         self._mode3_raw_pending["raw_channels"].append(raw_channel)
         self._mode3_raw_pending["raw_sizes"].append(len(raw_samples))
@@ -1353,6 +1479,7 @@ class SerialPort(QThread):
         msg = {
             "type": "append_mode3_raw",
             "timestamps": self._mode3_raw_pending["timestamps"],
+            "packet_indices": self._mode3_raw_pending["packet_indices"],
             "raw_samples": self._mode3_raw_pending["raw_samples"],
             "raw_channels": self._mode3_raw_pending["raw_channels"],
             "raw_sizes": self._mode3_raw_pending["raw_sizes"],
@@ -1392,6 +1519,7 @@ class SerialPort(QThread):
      
     def data_process_full(self, read_data):
         # GUI updater
+        self._finalize_transition_if_needed()
         self.GUIUpate_enable()
 
         if(len(read_data)!= 0):
@@ -1412,34 +1540,40 @@ class SerialPort(QThread):
                     pass
                 # packet proprocessing 
                 """ mode 0 """
-                if(packets_type == 1 and packet_length == 77): 
+                if(packets_type == 1 and packet_length == 78): 
                     # get timestamp ms
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter # int(time.time() * 1000) 
+                    packet_words = packets.split(' ')
+                    packet_counter = int(swap16Hex(packet_words[-1]), 16) & 0xFFFF
+                    payload = (' '.join(packet_words[4:-1]) + ' ')
 
                     ###### Data process ######
                     _ = int(packets[0:2] ,16) # channel num of each packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
                     # lfp packets
-                    self.lfp_packets_process(packets[20:] + ' ')
+                    self.lfp_packets_process(payload, packet_counter)
 
                     # file saving
-                    if(self.save_file_lfp_flag):
+                    if(self._should_save_mode(0)):
                         self.LFPRawCounter += 1
 
                     """  Test Mode: mode 1 """
-                elif(packets_type == 2 and packet_length == 108): 
+                elif(packets_type == 2 and packet_length == 109): 
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter # int(time.time() * 1000)
+                    packet_words = packets.split(' ')
+                    packet_counter = int(swap16Hex(packet_words[-1]), 16) & 0xFFFF
+                    payload = (' '.join(packet_words[4:-1]) + ' ')
                     
                     self.spike_channel_index_mode1_3 = int(packets[0:2] ,16) # channel index of current packets
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16) # sensor signal
 
-                    self.spike_packets_process(packets[20:] + ' ')
+                    self.spike_packets_process(payload, packet_counter)
                     # file saving
-                    if(self.save_file_mode1_flag):
+                    if(self._should_save_mode(1)):
                         self.SPIKERawCounter += 1
                     pass
                 
@@ -1460,44 +1594,50 @@ class SerialPort(QThread):
                     # self.Timestamp_neural_signal = int(time.time() * 1000)
                     # current index 
                     temp_packet_index = int(packets[0:2] ,16) # index of 3 packets list
+                    packet_words = packets.split(' ')
+                    packet_counter = int(swap16Hex(packet_words[-1]), 16) & 0xFFFF
+                    payload = (' '.join(packet_words[5:-1]) + ' ')
                     # current signal
                     self.overflowSignal[1] = int(packets[15:17] ,16) 
                     # current recording channels
-                    self.spike_raw_channel[0] = int(packets[22:24] ,16)
-                    self.spike_raw_channel[1] = int(packets[20:22] ,16)
-                    self.spike_raw_channel[2] = int(packets[27:29] ,16)
-                    self.spike_raw_channel[3] = int(packets[25:27] ,16)
+                    self.spike_raw_channel = _decode_mode2_channel_word(packet_words[4])
 
-                    self.spike_FIFO_mode2.append([self.Timestamp_neural_signal, temp_packet_index, self.spike_raw_channel, (packets[30:] + ' ')]) # timestamp + packet_index + channel_index + raw data
+                    self.spike_FIFO_mode2.append([self.Timestamp_neural_signal, temp_packet_index, self.spike_raw_channel, payload, packet_counter]) # timestamp + packet_index + channel_index + raw data
                     # process data
                     self.spike_raw_packets_process_mode2()
 
                     # file saving
-                    if(self.save_file_mode2_flag):
+                    if(self._should_save_mode(2)):
                         self.Mode2RawCounter += 1
                     pass
 
                     """ ESA packets: mode 3 """
-                elif(packets_type == 7 and packet_length == 80): 
+                elif(packets_type == 7 and packet_length == 81): 
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16)
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter # int(time.time() * 1000)
+                    packet_words = packets.split(' ')
+                    packet_counter = int(swap16Hex(packet_words[-1]), 16) & 0xFFFF
+                    payload = (' '.join(packet_words[4:-1]) + ' ')
                     self.mode3_reref_status = int(packets[0:2] ,16)
 
                     self.overflowSignal[1] = int(packets[15:17] ,16) # current signal
                     self.sensor_update_flag = int(packets[17:19] ,16)# sensor signal
-                    self.mode_3_packets_process(packets[20:] + ' ')
+                    self.mode_3_packets_process(payload, packet_counter)
 
                     # file saving
-                    if(self.save_file_mode3_flag):
+                    if(self._should_save_mode(3)):
                         self.Mode3RawCounter += 1
                     pass
                 
-                elif(packets_type == 8 and packet_length == 104): # single channel Raw data recording
+                elif(packets_type == 8 and packet_length == 105): # single channel Raw data recording
                     self.Timestamp_recorder_counter = int(swap16Hex(packets[5:9]) + swap16Hex(packets[10:14]), 16) # timestamp
                     self.Timestamp_neural_signal = self.Timestamp_recorder_counter
+                    packet_words = packets.split(' ')
+                    packet_counter = int(swap16Hex(packet_words[-1]), 16) & 0xFFFF
+                    payload = (' '.join(packet_words[4:-1]) + ' ')
 
                     self.spike_channel_index_mode1_3 = int(packets[0:2] ,16) # channel index of current packets
-                    self.mode3_raw_data_process(packets[20:] + ' ')
+                    self.mode3_raw_data_process(payload, packet_counter)
 
                     pass
 
@@ -1520,23 +1660,23 @@ class SerialPort(QThread):
     def data_file_saving_control(self):
         # mode 0 
          ###### video recording ######
-        if(self.save_file_lfp_flag):
+        if(self._should_save_mode(0)):
             self.save_lfp_file(self.lfp_file_addr)
         elif(self.LFPRawCounter > 0):
             self.save_lfp_file(self.lfp_file_addr, manual_save=True)
         # mode 3
-        if(self.save_file_mode3_flag):
+        if(self._should_save_mode(3)):
             self.save_spike_mode3_file(self.mode3_file_addr)
         elif(self.Mode3RawCounter > 0):
             self.save_spike_mode3_file(self.mode3_file_addr, manual_save=True)
         
         # mode 1
-        if(self.save_file_mode1_flag):
+        if(self._should_save_mode(1)):
             self.save_spike_mode1_file(self.mode1_file_addr)
         elif(self.SPIKERawCounter > 0):
             self.save_spike_mode1_file(self.mode1_file_addr, manual_save=True)
         # mode 2
-        if(self.save_file_mode2_flag):
+        if(self._should_save_mode(2)):
             self.save_spike_mode2_file(self.mode2_file_addr)
         elif(self.Mode2RawCounter > 0):
             self.save_spike_mode2_file(self.mode2_file_addr, manual_save=True)
@@ -1552,14 +1692,14 @@ class SerialPort(QThread):
         self.alignment_counter = 75
         self.current_alignment_value = float(trial_num)
 
-    def mode_3_packets_process(self, mode_3_data_buffer):
+    def mode_3_packets_process(self, mode_3_data_buffer, packet_counter):
         # spilt
         mode_3_data_buffer = np.array(mode_3_data_buffer.split(' '))[0:-1]
         # 1. raw data 
         save_lfp_channels = None
         save_esa_channels = None
         save_packet_sensors = None
-        if self.save_file_mode3_flag:
+        if self._should_save_mode(3):
             save_lfp_channels = [[] for _ in range(16)]
             save_esa_channels = [[] for _ in range(16)]
             save_packet_sensors = [[] for _ in range(9)]
@@ -1577,6 +1717,7 @@ class SerialPort(QThread):
                 save_esa_channels[channel_num] = temp_channel_DAC_ESA
         
         self.lfptimestamp_GUI.append(self.Timestamp_neural_signal)
+        self.lfppacketindex_GUI.append(int(packet_counter) & 0xFFFF)
           # 3. sensor data
         temp_sensor_data = mode_3_data_buffer[self.sensor_index]
         # Reuse pre-allocated buffer
@@ -1603,11 +1744,11 @@ class SerialPort(QThread):
                  # for file saving
                 pass
 
-        if self.save_file_mode3_flag and save_lfp_channels is not None and save_esa_channels is not None and save_packet_sensors is not None:
-            self._save_mode3_append(self.Timestamp_neural_signal, save_lfp_channels, save_esa_channels, save_packet_sensors, self.sensor_update_flag)
+        if self._should_save_mode(3) and save_lfp_channels is not None and save_esa_channels is not None and save_packet_sensors is not None:
+            self._save_mode3_append(self.Timestamp_neural_signal, packet_counter, save_lfp_channels, save_esa_channels, save_packet_sensors, self.sensor_update_flag)
         pass
 
-    def mode3_raw_data_process(self, spike_data_buffer):
+    def mode3_raw_data_process(self, spike_data_buffer, packet_counter):
         # spilt
         spike_data_buffer = np.array(spike_data_buffer.split(' '))[0:-1]
         # 1. raw data + timestamp
@@ -1617,6 +1758,7 @@ class SerialPort(QThread):
         # 2. give to GUI buffer
         self.spikedata_GUI.extend(temp_channel_DAC)
         self.spiketimestamp_GUI.append(self.Timestamp_neural_signal)
+        self.spikepacketindex_GUI.append(int(packet_counter) & 0xFFFF)
         
         # alignment signal
         num_samples = len(temp_channel_DAC)
@@ -1642,8 +1784,8 @@ class SerialPort(QThread):
         self.alignment_GUI.extend(current_alignment_vals)
         
         # 3. save to file
-        if self.save_file_mode3_flag:
-            self._save_mode3_raw_append(self.Timestamp_neural_signal, temp_channel_DAC, self.spike_channel_index_mode1_3, current_alignment_vals)
+        if self._should_save_mode(3):
+            self._save_mode3_raw_append(self.Timestamp_neural_signal, packet_counter, temp_channel_DAC, self.spike_channel_index_mode1_3, current_alignment_vals)
          
 
     def spike_sensor_packets_process_mode2(self, sensor_data):
@@ -1699,6 +1841,7 @@ class SerialPort(QThread):
                 # packet index and timestamp
                 temp_i_timestamp = temp_mode2[0]
                 temp_i_packetIndex = temp_mode2[1] # 0~2
+                temp_i_counter = temp_mode2[4]
                 # spilt raw data
                 temp_raw_mode2 = np.array(temp_mode2[3].split(' '))[0:-1]
                 emp_channel_DAC = list(map(lambda x:self.DAC(x, raw=False), temp_raw_mode2))
@@ -1706,27 +1849,29 @@ class SerialPort(QThread):
                 for i, channel_num in enumerate(temp_mode2[2]): # channel index: 4 channels : 30 points per packet per channel
                     self.spikedata_mode2_GUI[channel_num].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
                     # file saving
-                    if(self.save_file_mode2_flag):
+                    if(self._should_save_mode(2)):
                         self.AP_LFP_data["Channel_{}".format(channel_num)].extend(emp_channel_DAC[30 * i:30 * (i + 1)])
             
                 # give to GUI buffer for timestamp
                 self.spiketimestamp_mode2_GUI.append(current_timestamp) # timestamp
+                self.spikepacketindex_mode2_GUI.append(int(temp_i_counter) & 0xFFFF)
                 # file saving
-                if(self.save_file_mode2_flag):
+                if(self._should_save_mode(2)):
                     self.AP_LFP_data["TimeStamp"].append(current_timestamp) # timestamp
+                    self.AP_LFP_data["PacketIndex"].append(temp_i_counter)
 
             # append back to fifo
             for i in range(len(non_duplicate_index) - temp_pop_times):
                 self.spike_FIFO_mode2.appendleft(FIFO_list_temp[len(non_duplicate_index) - i - 1])
         pass
 
-    def lfp_packets_process(self, lfp_data_buffer):
+    def lfp_packets_process(self, lfp_data_buffer, packet_counter):
         # spilt
         lfp_data_buffer = np.array(lfp_data_buffer.split(' '))[0:-1]
         # 1. raw data 
         save_packet_channels = None
         save_packet_sensors = None
-        if self.save_file_lfp_flag:
+        if self._should_save_mode(0):
             save_packet_channels = [[] for _ in range(16)]
             save_packet_sensors = [[] for _ in range(9)]
         for channel_num in range(16):
@@ -1738,6 +1883,7 @@ class SerialPort(QThread):
         
         # 2. timestamp
         self.lfptimestamp_GUI.append(self.Timestamp_neural_signal)
+        self.lfppacketindex_GUI.append(int(packet_counter) & 0xFFFF)
         
         # 3. sensor data
         temp_sensor_data = lfp_data_buffer[self.sensor_index]
@@ -1757,10 +1903,10 @@ class SerialPort(QThread):
             if save_packet_sensors is not None:
                 save_packet_sensors[i] = temp_sensor
 
-        if self.save_file_lfp_flag and save_packet_channels is not None and save_packet_sensors is not None:
-            self._save_mode0_append(self.Timestamp_neural_signal, save_packet_channels, save_packet_sensors, self.sensor_update_flag)
+        if self._should_save_mode(0) and save_packet_channels is not None and save_packet_sensors is not None:
+            self._save_mode0_append(self.Timestamp_neural_signal, packet_counter, save_packet_channels, save_packet_sensors, self.sensor_update_flag)
 
-    def spike_packets_process(self, spike_data_buffer):
+    def spike_packets_process(self, spike_data_buffer, packet_counter):
         # spilt
         spike_data_buffer = np.array(spike_data_buffer.split(' '))[0:-1]
         # 1. raw data + timestamp
@@ -1769,10 +1915,12 @@ class SerialPort(QThread):
         # 2. give to GUI buffer
         self.spikedata_GUI.extend(temp_channel_DAC)
         self.spiketimestamp_GUI.append(self.Timestamp_neural_signal)
+        self.spikepacketindex_GUI.append(int(packet_counter) & 0xFFFF)
         # 3. save to file
-        if(self.save_file_mode1_flag):
+        if(self._should_save_mode(1)):
             self.AP_data["Raw_data"].extend(temp_channel_DAC)
             self.AP_data["Raw_timestamp"].append(self.Timestamp_neural_signal)
+            self.AP_data["PacketIndex"].append(packet_counter)
             self.AP_data["Raw_channel"].append(self.spike_channel_index_mode1_3) 
             self.sensors_data["UpdateFlag"].append(self.sensor_update_flag)
             # Log
@@ -1805,7 +1953,7 @@ class SerialPort(QThread):
             for channel_num ,spike_num in enumerate(spike_data):
                 self.spikerasterdata_GUI[15 - channel_num].append(int(spike_num))
                 # for file saving
-                if(int(spike_num) and self.save_file_mode1_flag):
+                if(int(spike_num) and self._should_save_mode(1)):
                     self.AP_data["AP_timestamp"].append(raster_time * 0.864 + self.Timestamp_neural_signal) # 一个 raster bin 大概为0.864ms
                     self.AP_data["Electrode"].append(15 - channel_num)
 
@@ -1902,15 +2050,15 @@ class SerialPort(QThread):
             self._mode1_progress_bucket = -1
             self.ProgressUpdate.emit(1, 0, round(self.Timestamp_recorder_counter / 1000 / 60, 2)) # Reset progress
             # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file
-            timestamp_files = np.array(self.AP_data["Raw_timestamp"])
-            timestamp_diff = np.diff(timestamp_files)
-            # recording the missed packets number   
-            miss_packets = np.argwhere((timestamp_diff > self.Spike_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
-            self.AP_data["MissPacketsIndex"] = miss_packets
-            # number
-            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.Spike_max_interval)
-            miss_packets_num = np.sum(miss_packets_num.flatten())
-            self.AP_data["MissPackets"] = miss_packets_num # 100000
+            packet_indices = self.AP_data.get("PacketIndex", [])
+            if packet_indices is not None and len(packet_indices) > 1:
+                miss_packets, miss_packets_num = _calc_miss_packets_from_indices(packet_indices, expected_step=1)
+                self.AP_data["MissPacketsIndex"] = np.asarray(miss_packets, dtype=np.int64)
+                self.AP_data["MissPackets"] = float(miss_packets_num)
+            else:
+                self.AP_data["MissPacketsIndex"] = np.asarray([], dtype=np.int64)
+                self.AP_data["MissPackets"] = 0.0
+                logging.critical(f"Mode1 PacketIndex unavailable when saving: size={0 if packet_indices is None else len(packet_indices)}")
             # 2. save the file (Offload to process)
             end_timestamp = float(time.time() * 1000)
             
@@ -1963,15 +2111,15 @@ class SerialPort(QThread):
             self._mode2_progress_bucket = -1
             self.ProgressUpdate.emit(2, 0, round(self.Timestamp_recorder_counter / 1000 / 60, 2)) # Reset progress
             # 1. detect if there exist one or mutiple miss packets when save raw data to a structured file  
-            timestamp_files = np.array(self.AP_LFP_data["TimeStamp"])       
-            timestamp_diff = np.diff(timestamp_files)
-            # recording the missed packets number
-            miss_packets = np.argwhere((timestamp_diff > self.mode2_max_interval) | (timestamp_diff <= 0)).flatten() # the interval exceed the set value
-            self.AP_LFP_data["MissPacketsIndex"] = miss_packets
-            # number
-            miss_packets_num = np.ceil(timestamp_diff[miss_packets] / self.mode2_max_interval)
-            miss_packets_num = np.sum(miss_packets_num.flatten())
-            self.AP_LFP_data["MissPackets"] = miss_packets_num # 100000
+            packet_indices = self.AP_LFP_data.get("PacketIndex", [])
+            if packet_indices is not None and len(packet_indices) > 1:
+                miss_packets, miss_packets_num = _calc_miss_packets_from_indices(packet_indices, expected_step=1)
+                self.AP_LFP_data["MissPacketsIndex"] = np.asarray(miss_packets, dtype=np.int64)
+                self.AP_LFP_data["MissPackets"] = float(miss_packets_num)
+            else:
+                self.AP_LFP_data["MissPacketsIndex"] = np.asarray([], dtype=np.int64)
+                self.AP_LFP_data["MissPackets"] = 0.0
+                logging.critical(f"Mode2 PacketIndex unavailable when saving: size={0 if packet_indices is None else len(packet_indices)}")
 
             # 2. save the file (Offload to process)
             end_timestamp = float(time.time() * 1000)
@@ -2017,6 +2165,8 @@ class SerialPort(QThread):
 
     def GUIUpate_enable(self):
         """ GUI update """ 
+        if self._is_in_transition_grace():
+            return
         if(len(self.lfptimestamp_GUI) >= self.GUIUpdateInterval): # mode 0 & 3
             # Create copies of data to emit to avoid race conditions when clearing buffers
             lfpdata_copy = [list(ch) for ch in self.lfpdata_GUI]
@@ -2024,10 +2174,11 @@ class SerialPort(QThread):
             spikerasterdata_copy = [list(ch) for ch in self.spikerasterdata_GUI]
             esadata_copy = [list(ch) for ch in self.ESAdata_GUI]
             
-            self.GUIUpdate.emit([[0, self.mode3_reref_status], list(self.lfptimestamp_GUI), lfpdata_copy, sensordata_copy, spikerasterdata_copy, esadata_copy]) # mode 0
+            self.GUIUpdate.emit([[0, self.mode3_reref_status], list(self.lfptimestamp_GUI), lfpdata_copy, sensordata_copy, spikerasterdata_copy, esadata_copy, list(self.lfppacketindex_GUI)]) # mode 0
             
             # Clear existing buffers instead of creating new ones to prevent memory fragmentation
             self.lfptimestamp_GUI.clear()
+            self.lfppacketindex_GUI.clear()
             for ch in self.lfpdata_GUI: ch.clear()
             for ch in self.sensordata_GUI: ch.clear()
             for ch in self.spikerasterdata_GUI: ch.clear()
@@ -2041,10 +2192,11 @@ class SerialPort(QThread):
             spikerasterdata_copy = [list(ch) for ch in self.spikerasterdata_GUI]
             
             self.GUIUpdate.emit([[1, self.spike_channel_index_mode1_3], list(self.spiketimestamp_GUI), spikedata_copy, sensordata_copy, spikerasterdata_copy, 
-            list(self.alignment_GUI)]) # mode 1
+            list(self.alignment_GUI), list(self.spikepacketindex_GUI)]) # mode 1
             
             # Clear
             self.spiketimestamp_GUI.clear()
+            self.spikepacketindex_GUI.clear()
             self.spikedata_GUI.clear()
             for ch in self.spikerasterdata_GUI: ch.clear()
             for ch in self.sensordata_GUI: ch.clear()
@@ -2055,10 +2207,11 @@ class SerialPort(QThread):
             spikedata_mode2_copy = [list(ch) for ch in self.spikedata_mode2_GUI]
             sensordata_copy = [list(ch) for ch in self.sensordata_GUI]
             
-            self.GUIUpdate.emit([[2], list(self.spiketimestamp_mode2_GUI), spikedata_mode2_copy, sensordata_copy]) # mode 2
+            self.GUIUpdate.emit([[2], list(self.spiketimestamp_mode2_GUI), spikedata_mode2_copy, sensordata_copy, list(self.spikepacketindex_mode2_GUI)]) # mode 2
             
             # Clear
             self.spiketimestamp_mode2_GUI.clear()
+            self.spikepacketindex_mode2_GUI.clear()
             for ch in self.sensordata_GUI: ch.clear()
             for ch in self.spikedata_mode2_GUI: ch.clear()
       

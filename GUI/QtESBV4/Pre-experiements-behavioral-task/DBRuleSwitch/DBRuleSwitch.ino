@@ -349,7 +349,7 @@ void loop()
       SendTrialInfo2PC();    // send trial info to PC through Serial
 
       //////////// for next trial ///////////
-      autoChangeProtocol(); // Change protocol and parameters based on performance;
+      autoChangeProtocol(false); // Change protocol and parameters based on performance;
       autoReward();         // Set Reward Flag if many wrongs in a row;
       trialSelection();     // determine TrialType;
       write_SD_para_S();    // write parameter S (updated after this trial) to SD card;
@@ -540,6 +540,10 @@ void loop()
       String packetString = packetBuffer;
       int ind1 = packetString.indexOf(',');                          // finds location of first ,
       S.currProtocolIndex = packetString.substring(1, ind1).toInt(); // captures first data String
+      if(S.currProtocolIndex > 0){
+        S.currProtocolIndex = S.currProtocolIndex - 1;
+        autoChangeProtocol(true);
+      }
       write_SD_para_S();
       free_reward(S.reward_left);
       break;
@@ -1186,12 +1190,12 @@ void SendTrialInfo2PC()
   Serial.println(outBuffer);
 }
 
-void autoChangeProtocol()
+void autoChangeProtocol(bool manual)
 { 
   switch (S.currProtocolIndex)
   {
   case 0: // habitation 1
-   if (S.currProtocolTrials > 500 && EarlyLick100 < 20)
+   if ((S.currProtocolTrials > 500 && EarlyLick100 < 20) || manual)
 //      if (S.currProtocolTrials > 10)
     {                        
       S.currProtocolIndex = 1; // habitation 2
@@ -1210,7 +1214,7 @@ void autoChangeProtocol()
     break;
     
   case 1: // habitation 2
-   if (S.currProtocolTrials > 100 && EarlyLick100 < 20)
+   if ((S.currProtocolTrials > 100 && EarlyLick100 < 20) || manual)
 //      if (S.currProtocolTrials > 10)
     {
       S.currProtocolIndex = 2; // habitation 3
@@ -1229,7 +1233,7 @@ void autoChangeProtocol()
     break;
 
   case 2: // habitation 3
-   if (S.currProtocolTrials > 100 && EarlyLick100 < 25)
+   if ((S.currProtocolTrials > 100 && EarlyLick100 < 25) || manual)
 //      if (S.currProtocolTrials > 10)
     {                        
       S.currProtocolIndex = 3; // habitation 4
@@ -1248,7 +1252,7 @@ void autoChangeProtocol()
     break;
   
   case 3: // habitation 
- if (S.currProtocolTrials > 100 && EarlyLick100 < 30)
+ if ((S.currProtocolTrials > 100 && EarlyLick100 < 30) || manual)
 //    if (S.currProtocolTrials > 10)
   {                        
     S.currProtocolIndex = 4; // habitation 5
@@ -1267,7 +1271,7 @@ void autoChangeProtocol()
   break;
 
   case 4: // habitation 
- if (S.currProtocolTrials > 100 && EarlyLick100 < 40)
+ if ((S.currProtocolTrials > 100 && EarlyLick100 < 40) || manual)
 //    if (S.currProtocolTrials > 10)
   {                        
     S.currProtocolIndex = 5; // Early training loc
@@ -1290,7 +1294,7 @@ void autoChangeProtocol()
 
 
   case 5: // loc 
-  if (S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 75)
+  if ((S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 75) || manual)
 //      if (S.currProtocolTrials > 10)
     {
       S.currProtocolTrials = 0;
@@ -1310,7 +1314,7 @@ void autoChangeProtocol()
     break;
   
   case 6: // loc retention
- if (S.currProtocolTrials >= 1000 && Perf100 > 75)
+ if ((S.currProtocolTrials >= 1000 && Perf100 > 75) || manual)
 //    if (S.currProtocolTrials > 10)
   {
     S.currProtocolTrials = 0;
@@ -1334,7 +1338,7 @@ void autoChangeProtocol()
 
 
   case 7: // aud freq
-  if (S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 70)
+  if ((S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 70) || manual)
 //    if (S.currProtocolTrials > 10)
     {
       S.rule = 1; //  aud freq retention
@@ -1354,7 +1358,7 @@ void autoChangeProtocol()
     break;
 
   case 8: // aud freq retention
-   if (S.currProtocolTrials >= 1000 && Perf100 > 70)
+   if ((S.currProtocolTrials >= 1000 && Perf100 > 70) || manual)
 //      if (S.currProtocolTrials > 10)
     {
       S.currProtocolTrials = 0;
@@ -1380,7 +1384,7 @@ void autoChangeProtocol()
 
 
   case 9: // aud freq reversal
-  if (S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 70)
+  if ((S.currProtocolTrials >= 500 && int(currProtocolPerf_corrected * 100) >= 70) || manual)
 // if (S.currProtocolTrials > 10)
     {
       S.rule = 2; //  aud freq reversal

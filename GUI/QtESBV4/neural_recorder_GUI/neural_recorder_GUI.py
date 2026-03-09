@@ -126,6 +126,31 @@ def _safe_float_fast(v):
     except Exception:
         return np.nan
 
+def _count_missing_from_indices(packet_indices, expected_step=1):
+    if packet_indices is None:
+        return 0, 0
+    try:
+        n_packets = len(packet_indices)
+    except Exception:
+        packet_indices = list(packet_indices)
+        n_packets = len(packet_indices)
+    if n_packets <= 1:
+        return 0, n_packets
+    expected_step = int(expected_step) if expected_step else 1
+    if expected_step <= 0:
+        expected_step = 1
+    miss = 0
+    for i in range(n_packets - 1):
+        prev_idx = int(packet_indices[i]) & 0xFFFF
+        curr_idx = int(packet_indices[i + 1]) & 0xFFFF
+        delta = (curr_idx - prev_idx) & 0xFFFF
+        if delta == 0:
+            continue
+        increments = delta // expected_step
+        if increments > 1:
+            miss += (increments - 1)
+    return int(miss), n_packets
+
 
 # 添加新的LFP频谱窗口类
 class LFPSpectrumWindow(QMainWindow):
@@ -504,7 +529,7 @@ class ESBMainWindow(UI.MainWindow):
         self.pen_white_2 = pg.mkPen({'color': 'w', 'width': 2})
 
         self.current_sample_mode = 0 
-        self.mode3_esa_reref_mode = 0
+        self.mode3_esa_reref_mode = 1 # default fast re-reference
 
         """ init params """
         # system
@@ -1299,22 +1324,10 @@ class ESBMainWindow(UI.MainWindow):
                 ESA_raw_data = np.array(data[5]) * self.esa_scale_factor # 放缩 到 lfp 一样的尺度
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
 
-                # maz interval between packets
-                Interval_packets_max = 0
-                if(self.current_sample_mode == 0):
-                    Interval_packets_max = self.mSerial.LFP_max_interval
-                elif(self.current_sample_mode == 3):
-                    Interval_packets_max = self.mSerial.mode3_max_interval
-
-                # statitic dropped packets
-                temp_loss = np.diff(lfp_timestamp) 
-                temp_loss = temp_loss[(temp_loss > Interval_packets_max) | (temp_loss <= 0)]
-                
-                loss_packets_value = len(temp_loss // (Interval_packets_max - 1))
-                # if(loss_packets_value > 0):
-                #     print("LFP data moide3:", Interval_packets_max, loss_packets_value)
+                packet_indices = np.array(data[6], dtype=np.uint32) if len(data) > 6 else np.array([], dtype=np.uint32)
+                loss_packets_value, packet_count = _count_missing_from_indices(packet_indices, expected_step=1)
                 self.lfpmisspackets +=  loss_packets_value
-                self.lfpaccumulpackets += len(lfp_timestamp)
+                self.lfpaccumulpackets += packet_count
                 # 每save file 1次就重新统计丢失的包的数量
                 if(self.lfpaccumulpackets >= (self.mSerial.file_size_lfp)):
                     self.lfpaccumulpackets = 0
@@ -1373,25 +1386,23 @@ class ESBMainWindow(UI.MainWindow):
                 spike_raw_data_mode_1 = np.array(data[2])
                 spike_raster_data_mode_1 = np.array(data[4], dtype=np.float32)
                 alignment_data = np.array(np.array(data[5], dtype=np.float32) > 0) # 这里只考虑 trial 触发的时候为 1
+                if len(spike_timestamp_mode_1) == 0 or len(spike_raw_data_mode_1) == 0:
+                    return
+                if len(alignment_data) != len(spike_raw_data_mode_1):
+                    normalized_alignment = np.zeros(len(spike_raw_data_mode_1), dtype=np.float32)
+                    copy_len = min(len(alignment_data), len(spike_raw_data_mode_1))
+                    if copy_len > 0:
+                        normalized_alignment[:copy_len] = alignment_data[:copy_len]
+                    alignment_data = normalized_alignment
 
                 # curr timestamp
                 self.spike_timestamp_note = spike_timestamp_mode_1[0]
                 
-                # maz interval between packets
-                Interval_packets_max = 0
-                if(self.current_sample_mode == 1):
-                    Interval_packets_max = self.mSerial.Spike_max_interval
-                elif(self.current_sample_mode == 3):
-                    Interval_packets_max = self.mSerial.mode3_raw_max_interval
-    
-                # statitic dropped packets
-                temp_loss = np.diff(spike_timestamp_mode_1) 
-                temp_loss = temp_loss[(temp_loss > Interval_packets_max) | (temp_loss <= 0)]
-                loss_packets_value = len(temp_loss // (Interval_packets_max - 1))
-                # if(loss_packets_value > 0):
-                #     print("raw data moide3:", Interval_packets_max, temp_loss[temp_loss > 0])
+                packet_indices = np.array(data[6], dtype=np.uint32) if len(data) > 6 else np.array([], dtype=np.uint32)
+                expected_step = 1 if self.current_sample_mode == 1 else 4
+                loss_packets_value, packet_count = _count_missing_from_indices(packet_indices, expected_step=expected_step)
                 self.spikemisspackets_mode_1 +=  loss_packets_value
-                self.spikeaccumulpackets_mode_1 += len(spike_timestamp_mode_1)
+                self.spikeaccumulpackets_mode_1 += packet_count
                 # 每save file一次就重新统计丢失的包的数量
                 if(self.spikeaccumulpackets_mode_1 >= self.mSerial.file_size_mode1):
                     self.spikeaccumulpackets_mode_1 = 0
@@ -1448,15 +1459,13 @@ class ESBMainWindow(UI.MainWindow):
                 """ spike raw data AP mode 2 """
                 spike_timestamp = np.array(data[1])
                 spikeraw_data =data[2]
+                packet_indices = np.array(data[4], dtype=np.uint32) if len(data) > 4 else np.array([], dtype=np.uint32)
                  # curr timestamp
                 self.spike_timestamp_note = spike_timestamp[0]
 
-                # statitic dropped packets
-                temp_loss = np.diff(spike_timestamp) 
-                temp_loss = temp_loss[(temp_loss > self.mSerial.Spike_max_interval) | (temp_loss <= 0)]
-                loss_packets_value = len(temp_loss // (self.mSerial.Spike_max_interval - 1))
+                loss_packets_value, packet_count = _count_missing_from_indices(packet_indices, expected_step=1)
                 self.spike_moide2_misspackets +=  loss_packets_value
-                self.spike_mode2_accumulpackets += len(spike_timestamp)
+                self.spike_mode2_accumulpackets += packet_count
 
                 # 每save file一次就重新统计丢失的包的数量
                 if(self.spike_mode2_accumulpackets >= self.mSerial.file_size_mode2):
@@ -1940,18 +1949,31 @@ class ESBMainWindow(UI.MainWindow):
             self.open_command = [0x01 ,0x00] 
             self.mSerial.send_data(self.open_command)
             time.sleep(0.1)
+        if self.mSerial is not None:
+            self.mSerial.begin_mode_transition(100)
         self.current_recording_mode = self.sampling_mode_combo.currentText()
 
     def sample_stop(self):
         self.close_command = [0x02 ,0x00] # invalid sample mode
         self.mSerial.send_data(self.close_command)
+        if self.mSerial is not None:
+            self.mSerial.begin_mode_transition(100)
         self.current_recording_mode = "Idle"
 
     def sample_mode_switch(self, mode=None): # 切换选项卡的时候就会触发 模式的改变
         if(mode == None):
             mode = self.sampling_mode_combo.currentIndex()
+        prev_mode = self.current_sample_mode
         self.err = self.mSerial.send_data([0x00 ,0x03, int(hex(mode) ,16), 0x00])
+        if self.mSerial is not None:
+            self.mSerial.begin_mode_transition(100)
         self.current_sample_mode = mode
+        if (prev_mode in (1, 3)) and (self.current_sample_mode in (1, 3)) and (prev_mode != self.current_sample_mode):
+            self.ring_spike_pointer = 0
+            self.ring_spike_raster_pointer = 0
+            self.spike_raw_data.fill(np.nan)
+            self.spike_raster_data.fill(np.nan)
+            self.alignment_buffer.fill(0)
         
         # Update current recording mode string if we are recording
         if hasattr(self, 'current_recording_mode'):

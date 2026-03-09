@@ -345,6 +345,8 @@ int tx_payload_wrap(u16_t *Raw_data, int16_t *imu_data, int16_t *lc_data, u16_t 
         tx_payload.data[txbufIndex + i] = (u16_t)*(Raw_data + i);
     }
     txbufIndex += raw_length;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
   
     tx_payload.length = txbufIndex * 2; //  64 + 4 + 6 + 3 == 77 shorts; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
@@ -390,6 +392,8 @@ int spike_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t *Spike_raster_data, int16
         tx_payload.data[txbufIndex + i] = (u16_t)*(Spike_raster_data + i);
     }
     txbufIndex += 5;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
 
     tx_payload.length = txbufIndex * 2; //  90 * 2 + 5 * 2 + 13 * 2 == 216 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
@@ -408,10 +412,11 @@ int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u
     tx_payload.data[3] = (u16_t)overflow_signal; 
     txbufIndex += 4;
 
-    // 3. channel indice
-    tx_payload.data[txbufIndex] = ((u16_t)*(packet_index) << 8) | (u16_t)*(packet_index + 1); // the first and the second channels
-    tx_payload.data[txbufIndex + 1] = ((u16_t)*(packet_index + 2) << 8) | (u16_t)*(packet_index + 3); // the third and the fourth channels
-    txbufIndex += 2;
+    tx_payload.data[txbufIndex] = (((u16_t)*(packet_index) & 0x0F) << 12) |
+                                  (((u16_t)*(packet_index + 1) & 0x0F) << 8) |
+                                  (((u16_t)*(packet_index + 2) & 0x0F) << 4) |
+                                  (((u16_t)*(packet_index + 3) & 0x0F));
+    txbufIndex += 1;
 
     // 4. spike raw data 4 channels length: 120
     for (int i = 0; i < spike_raw_length; i++)
@@ -419,6 +424,8 @@ int spike_multi_tx_payload_wrap(u16_t *Spike_Raw_data, u16_t spike_raw_length, u
         tx_payload.data[txbufIndex + i] = (u16_t)*(Spike_Raw_data + i);
     }
     txbufIndex += spike_raw_length;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
 
     tx_payload.length = txbufIndex * 2; //  (4 + 2 + 120) * 2 == 252 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
@@ -449,6 +456,8 @@ int spike_sensor_tx_payload_wrap(int16_t *imu_data, int16_t *lc_data){
         tx_payload.data[txbufIndex + i] = (int16_t)*(lc_data + i);
     }
     txbufIndex += 3;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
 
     tx_payload.length = txbufIndex * 2; // (4 + 6 + 3) * 2 == 26 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 
@@ -503,6 +512,8 @@ int mode_3_tx_payload_wrap(u16_t *lfp_Raw_data, u16_t *ESA_Raw_data, u16_t *Spik
         tx_payload.data[txbufIndex + i] = (u16_t)*(Spike_raster_data + i);
     }
     txbufIndex += 3;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
 
     tx_payload.length = txbufIndex * 2; //  16 * 5 （lfp） + 1 （head）+ 2 (timestamp) + 1 (flag) + 6 (IMU) + 3 (battery) + 5 (raster, 1 ms per short) == 98
     return esb_write_payload(&tx_payload); 
@@ -525,6 +536,8 @@ int mode_3_raw_tx_payload_wrap(u16_t *Raw_data,  u16_t RawData_length,  u8_t Cha
         tx_payload.data[txbufIndex + i] = (u16_t)*(Raw_data + i);
     }
     txbufIndex += RawData_length;
+    tx_payload.data[txbufIndex] = tx_payload_wraped_num;
+    txbufIndex++;
     
     tx_payload.length = txbufIndex * 2; //  4 + 30 == 34 bytes; maximum 252 bytes
     return esb_write_payload(&tx_payload); 

@@ -147,7 +147,7 @@ uint8_t gpiote_channel;
  */
 #define reversebit(x, y) x ^= (1 << y)
 
-u32_t tx_payload_wraped_num = 0; // count the number of wrapped tx packages
+u16_t tx_payload_wraped_num = 0; // count the number of wrapped tx packages
 /***********************for debugging and cue************************/ 
 #define LED0_NODE DT_ALIAS(led0) // macro function of devicetree; test led
 
@@ -967,6 +967,7 @@ int main(void)
                 if(sampe_mode == 0){ // 只在mode0下做低功耗的处理
                         k_sleep(K_FOREVER); 
                 }
+                //TODO 考虑使用20Hz的ESA，125Hz采样率；来实现全天候的Mode3记录;
                 }
 	}
         return 0;
